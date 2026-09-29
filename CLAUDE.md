@@ -31,14 +31,21 @@ Everything is local: no backend, no accounts, video never leaves the device.
 
 ## 2. Current state
 
-A working version exists as `form-coach-pwa.zip`. Unzip it into the repo root.
+The app lives in `app/` (unzipped from the original `form-coach-pwa.zip`; the
+repo-root `index.html` is an unrelated Messyma redirect, leave it alone).
 It has been tested headless in Chromium with a fake camera, including a full
 offline reload: service worker installs, model loads from cache, camera starts,
 pose graph runs. It has NOT yet been tested on a real iPhone or Android device.
 
 ```
-form-coach-pwa/
-  index.html                  # the whole app: HTML + CSS + one ES module (~1,000 lines)
+app/
+  index.html                  # the app: HTML + CSS + the UI/camera ES module
+  src/pose/features.js        # geometry, FEATS, EX, landmarks → joints, record()
+  src/brain/segment.js        # smooth, resample, thresholds, segment, repFrom
+  src/brain/template.js       # buildTemplate
+  src/brain/builtins.js       # fk, MOTION, builtin
+  src/brain/dtw.js            # compare (DTW scoring)
+  src/brain/names.js          # slug, guessType
   sw.js                       # service worker (precache shell, cache-first model)
   manifest.webmanifest
   _headers                    # Netlify / Cloudflare Pages caching + wasm MIME
@@ -260,18 +267,23 @@ scores, average, and the top 3 tips.
 ## 6. Run it
 
 ```bash
-cd form-coach-pwa
-python3 -m http.server 8080        # or: npx serve -l 8080
+npm install
+npm run serve                      # http-server app -p 8080 -c-1
 # open http://localhost:8080
+npm test                           # vitest unit tests (tests/unit)
+npm run test:e2e                   # playwright e2e (tests/e2e), starts the server itself
+FAKE_CAM_Y4M=tests/fixtures/squat_side.y4m npm run test:e2e   # optional real footage
 ```
+
+`src/*.js` modules are listed in the `sw.js` precache; add new modules there too
+and bump `VERSION`.
 
 ## 7. Test it
 
 ### 7.1 Automated browser tests (Playwright with fake camera)
 
-```bash
-npm init -y && npm i -D @playwright/test && npx playwright install chromium
-```
+Set up in `playwright.config.js` / `tests/e2e/app.spec.js`. Tests 1–4 are
+implemented and passing.
 
 Launch Chromium with:
 
@@ -309,6 +321,8 @@ Tests to write (these passed manually in the prototype unless marked new):
    white on video.
 
 ### 7.2 Unit tests (pure functions; extract them first)
+Done: the functions are extracted to `app/src/` (plain ES modules, no build
+step yet) and covered by `tests/unit/brain.test.js`.
 `angle`, `fromVertical`, `smooth`, `resample`, `thresholds`, `segment`,
 `repFrom`, `buildTemplate`, `compare` (DTW), `fk`, `builtin`, `guessType`,
 `slug`. Useful checks:

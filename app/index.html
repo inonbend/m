@@ -260,132 +260,13 @@ label.file input{position:absolute;opacity:0;width:1px;height:1px}
 import {PoseLandmarker, FilesetResolver} from "./vendor/tasks-vision/vision_bundle.mjs";
 const $=id=>document.getElementById(id);
 
-/* ================= geometry & features ================= */
-const angle=(a,b,c)=>{const ab=[a.x-b.x,a.y-b.y],cb=[c.x-b.x,c.y-b.y];
-  const d=(ab[0]*cb[0]+ab[1]*cb[1])/((Math.hypot(...ab)*Math.hypot(...cb))||1);
-  return Math.acos(Math.max(-1,Math.min(1,d)))*180/Math.PI};
-const fromVertical=(top,bot)=>Math.abs(Math.atan2(top.x-bot.x,bot.y-top.y)*180/Math.PI);
-const clamp=v=>Math.max(0,Math.min(100,v));
-const N=60;
-
-const FEATS={
-  knee:{label:"Knee angle",f:j=>angle(j.hip,j.knee,j.ankle),hint:{"+":"Bend your knees more.","-":"Don't bend your knees as much."}},
-  hip:{label:"Hip angle",f:j=>angle(j.sh,j.hip,j.knee),hint:{"+":"Hinge more at the hips.","-":"Don't fold so much at the hips — drive them forward."}},
-  elbow:{label:"Elbow angle",f:j=>angle(j.sh,j.el,j.wr),hint:{"+":"Bend your elbows further.","-":"Don't bend your elbows as far."}},
-  torso:{label:"Torso lean",f:j=>fromVertical(j.sh,j.hip),hint:{"+":"Keep your chest more upright.","-":"Lean your torso slightly more forward."}},
-  line:{label:"Body line",f:j=>angle(j.sh,j.hip,j.ankle),hint:{"+":"Match the reference hip height.","-":"Brace your core — keep a straight line from shoulders to ankles."}},
-  arm:{label:"Upper-arm swing",f:j=>fromVertical(j.sh,j.el),hint:{"+":"Pin your elbow to your side.","-":"Let your elbow travel a little, like the reference."}}
-};
-const EX={
-  squat:{name:"Squat",primary:"knee",feats:["knee","hip","torso"],need:["sh","hip","knee","ankle"],mid:"At the bottom"},
-  lunge:{name:"Lunge",primary:"knee",feats:["knee","hip","torso"],need:["sh","hip","knee","ankle"],mid:"At the bottom"},
-  rdl:{name:"Romanian deadlift",primary:"hip",feats:["hip","knee","torso"],need:["sh","hip","knee","ankle"],mid:"At the bottom"},
-  pushup:{name:"Push-up",primary:"elbow",feats:["elbow","line"],need:["sh","el","wr","hip","ankle"],mid:"At the bottom"},
-  curl:{name:"Bicep curl",primary:"elbow",feats:["elbow","arm","torso"],need:["sh","el","wr","hip"],mid:"At the top"}
-};
-const PTS=["nose","sh","el","wr","hip","knee","ankle"];
-const IDX={L:[0,11,13,15,23,25,27,29,31],R:[0,12,14,16,24,26,28,30,32]};
-const BONES=[[0,1],[1,2],[2,3],[1,4],[4,5],[5,6]];
-
-/* ================= built-in correct-form animations ================= */
-const R=Math.PI/180,SEG={shin:1.05,thigh:1.05,ua:.7,fa:.65};
-const upV=(p,l,d)=>({x:p.x+l*Math.sin(d*R),y:p.y-l*Math.cos(d*R)});
-const dnV=(p,l,d)=>({x:p.x+l*Math.sin(d*R),y:p.y+l*Math.cos(d*R)});
-function fk(q){
-  const ankle={x:0,y:0},knee=upV(ankle,SEG.shin,q.shin),hip=upV(knee,SEG.thigh,q.thigh),sh=upV(hip,1,q.torso),nose=upV(sh,.35,q.torso);
-  let el,wr;
-  if(q.wrist){wr=q.wrist;const dx=sh.x-wr.x,dy=sh.y-wr.y,d=Math.min(Math.hypot(dx,dy),SEG.ua+SEG.fa-1e-3),th=Math.atan2(dy,dx),
-    A=Math.acos(Math.max(-1,Math.min(1,(SEG.fa**2+d*d-SEG.ua**2)/(2*SEG.fa*d))));
-    const c=[th+A,th-A].map(a=>({x:wr.x+SEG.fa*Math.cos(a),y:wr.y+SEG.fa*Math.sin(a)}));el=c[0].x<c[1].x?c[0]:c[1]}
-  else{el=dnV(sh,SEG.ua,q.ua);wr=dnV(el,SEG.fa,q.fa)}
-  return{nose,sh,el,wr,hip,knee,ankle};
-}
-const MOTION={
-  squat:{dur:2.6,top:{shin:0,thigh:0,torso:5,ua:85,fa:85},bot:{shin:30,thigh:-75,torso:40,ua:85,fa:85},tip:"Sit back and down with your chest up, then stand tall."},
-  lunge:{dur:2.4,top:{shin:0,thigh:0,torso:3,ua:0,fa:0},bot:{shin:8,thigh:-85,torso:5,ua:0,fa:0},tip:"Drop straight down until your front thigh is level, torso upright."},
-  rdl:{dur:3,top:{shin:0,thigh:0,torso:0,ua:0,fa:0},bot:{shin:12,thigh:-15,torso:78,ua:0,fa:0},tip:"Soft knees, push your hips back, keep your back flat."},
-  pushup:{dur:2.2,top:{shin:64,thigh:64,torso:64},bot:{shin:73,thigh:73,torso:73},wrist:{x:2.84,y:0},tip:"Straight line from head to heels, lower until elbows reach 90°."},
-  curl:{dur:2.6,top:{shin:0,thigh:0,torso:0,ua:3,fa:8},bot:{shin:0,thigh:0,torso:0,ua:3,fa:150},tip:"Elbows pinned at your sides, curl all the way up, lower all the way down."}
-};
-function builtin(exKey){
-  const M=MOTION[exKey],E=EX[exKey],frames=[];
-  for(let i=0;i<N;i++){const p=(1-Math.cos(2*Math.PI*i/(N-1)))/2,q={};
-    Object.keys(M.top).forEach(k=>q[k]=M.top[k]+(M.bot[k]-M.top[k])*p);if(M.wrist)q.wrist=M.wrist;frames.push(fk(q))}
-  const mean={},std={};E.feats.forEach(k=>{mean[k]=frames.map(j=>+FEATS[k].f(j).toFixed(1));std[k]=Array(N).fill(8)});
-  const pose=frames.map(j=>PTS.map(n=>[+(j[n].x-j.hip.x).toFixed(3),+(j[n].y-j.hip.y).toFixed(3)]));
-  const th=thresholds(mean[E.primary]);
-  return{name:E.name+" (built-in)",exercise:exKey,mean,std,pose,dur:M.dur,hi:th.hi,lo:th.lo+.1*th.range,reps:[],sources:0,builtin:true,tip:M.tip};
-}
-
-function toJoints(lm,aspect){
-  const vis=k=>IDX[k].slice(1,7).reduce((s,i)=>s+(lm[i].visibility??0),0);
-  const ids=IDX[vis("L")>=vis("R")?"L":"R"],j={};
-  PTS.concat(["heel","toe"]).forEach((n,k)=>{const p=lm[ids[k]];j[n]={x:p.x*aspect,y:p.y,v:p.visibility??1}});
-  j.ids=ids;return j;
-}
-function normPose(j){
-  const o=j.hip,s=Math.hypot(j.sh.x-o.x,j.sh.y-o.y)||1,dir=(j.toe.x-j.heel.x)>=0?1:-1;
-  return PTS.map(n=>[+((j[n].x-o.x)/s*dir).toFixed(3),+((j[n].y-o.y)/s).toFixed(3)]);
-}
-function record(lm,aspect,exKey,t){
-  const E=EX[exKey],j=toJoints(lm,aspect);
-  if(!E.need.every(k=>j[k].v>.5))return null;
-  const f={};E.feats.forEach(k=>f[k]=FEATS[k].f(j));
-  return{t,f,pose:normPose(j),j};
-}
-
-/* ================= signal processing ================= */
-function smooth(a,w=2){return a.map((_,i)=>{let s=0,n=0;for(let k=i-w;k<=i+w;k++)if(k>=0&&k<a.length){s+=a[k];n++}return s/n})}
-function resample(a,n=N){const out=[];for(let i=0;i<n;i++){const x=i*(a.length-1)/(n-1),lo=Math.floor(x),hi=Math.min(a.length-1,lo+1);out.push(a[lo]+(a[hi]-a[lo])*(x-lo))}return out}
-function thresholds(series){const mx=Math.max(...series),mn=Math.min(...series),r=mx-mn;return{hi:mx-.25*r,lo:mn+.4*r,range:r}}
-function segment(series,hi,lo){
-  const reps=[];let cand=null,down=false;
-  series.forEach((v,i)=>{
-    if(!down){if(v>hi)cand=i;else if(v<lo&&cand!==null)down=true}
-    else if(v>hi){if(i-cand>=6)reps.push([cand,i]);down=false;cand=i}
-  });return reps;
-}
-function repFrom(recs,feats){
-  const f={};feats.forEach(k=>f[k]=resample(smooth(recs.map(r=>r.f[k]))).map(v=>+v.toFixed(1)));
-  const pose=[];for(let i=0;i<N;i++)pose.push(recs[Math.round(i*(recs.length-1)/(N-1))].pose);
-  return{f,pose,dur:recs[recs.length-1].t-recs[0].t};
-}
-function buildTemplate(name,exKey,reps,sources){
-  const E=EX[exKey],mean={},std={};
-  E.feats.forEach(k=>{mean[k]=[];std[k]=[];for(let i=0;i<N;i++){const vs=reps.map(r=>r.f[k][i]),m=vs.reduce((a,b)=>a+b,0)/vs.length;
-    const sd=Math.sqrt(vs.reduce((a,b)=>a+(b-m)**2,0)/vs.length);mean[k].push(+m.toFixed(1));std[k].push(+Math.max(sd,6).toFixed(1))}});
-  const pose=[];for(let i=0;i<N;i++)pose.push(PTS.map((_,p)=>[0,1].map(c=>+(reps.reduce((a,r)=>a+r.pose[i][p][c],0)/reps.length).toFixed(3))));
-  const th=thresholds(mean[E.primary]);
-  return{name,exercise:exKey,mean,std,pose,dur:reps.reduce((a,r)=>a+r.dur,0)/reps.length,hi:th.hi,lo:th.lo+.1*th.range,reps,sources};
-}
-
-/* ================= comparison (DTW) ================= */
-function compare(rep,tpl){
-  const E=EX[tpl.exercise],F=E.feats,W=12,INF=1e9;
-  const cost=(i,j)=>Math.sqrt(F.reduce((s,k)=>s+((rep.f[k][i]-tpl.mean[k][j])/tpl.std[k][j])**2,0));
-  const D=Array.from({length:N+1},()=>new Float64Array(N+1).fill(INF));D[0][0]=0;
-  for(let i=1;i<=N;i++)for(let j=Math.max(1,i-W);j<=Math.min(N,i+W);j++)D[i][j]=cost(i-1,j-1)+Math.min(D[i-1][j],D[i][j-1],D[i-1][j-1]);
-  const match=Array.from({length:N},()=>[]);let i=N,j=N;
-  while(i>0&&j>0){match[j-1].push(i-1);const a=D[i-1][j-1],b=D[i-1][j],c=D[i][j-1];if(a<=b&&a<=c){i--;j--}else if(b<c)i--;else j--}
-  const dev={},parts={},phases=[[0,24,"On the way down"],[24,36,E.mid],[36,60,"On the way up"]],cands=[];
-  F.forEach(k=>{dev[k]=match.map((is,jj)=>is.reduce((s,ii)=>s+rep.f[k][ii],0)/is.length-tpl.mean[k][jj]);
-    const z=dev[k].reduce((s,d,jj)=>s+Math.abs(d)/tpl.std[k][jj],0)/N;
-    parts[FEATS[k].label]=clamp(100-25*Math.max(0,z-.6));
-    phases.forEach(([a,b,name])=>{const seg=dev[k].slice(a,b),m=seg.reduce((x,y)=>x+y,0)/seg.length,
-      sd=tpl.std[k].slice(a,b).reduce((x,y)=>x+y,0)/(b-a);
-      if(Math.abs(m)>6&&Math.abs(m)/sd>1)cands.push({k,m,sev:Math.abs(m)/sd,phase:name})});
-  });
-  const ratio=rep.dur/tpl.dur;parts["Tempo"]=clamp(100*(1-Math.abs(Math.log(ratio))/Math.log(2.2)));
-  const featAvg=F.reduce((s,k)=>s+parts[FEATS[k].label],0)/F.length;
-  const score=Math.round(featAvg*.85+parts.Tempo*.15);
-  cands.sort((a,b)=>b.sev-a.sev);
-  const tips=cands.slice(0,2).map(c=>({key:c.k+c.phase,short:FEATS[c.k].hint[c.m>0?"+":"-"],
-    text:`${c.phase}, your ${FEATS[c.k].label.toLowerCase()} is ${Math.round(Math.abs(c.m))}° ${c.m>0?"larger":"smaller"} than the reference. ${FEATS[c.k].hint[c.m>0?"+":"-"]}`}));
-  if(ratio<.7)tips.push({key:"fast",short:"Slow down.",text:`You're moving ${Math.round((1/ratio-1)*100)}% faster than the reference. Slow down and control each rep.`});
-  if(ratio>1.5)tips.push({key:"slow",short:"Pick up the pace.",text:`You're ${Math.round((ratio-1)*100)}% slower than the reference.`});
-  const aligned=match.map(is=>rep.pose[is[0]]);
-  return{score,parts,tips,aligned};
-}
+/* ================= geometry, features and the brain (pure modules in ./src) ================= */
+import {N,FEATS,EX,PTS,BONES,record} from "./src/pose/features.js";
+import {smooth,thresholds,segment,repFrom} from "./src/brain/segment.js";
+import {buildTemplate} from "./src/brain/template.js";
+import {builtin} from "./src/brain/builtins.js";
+import {compare} from "./src/brain/dtw.js";
+import {slug,guessType} from "./src/brain/names.js";
 
 /* ================= pose model ================= */
 const LOCAL_MODEL="./models/pose_landmarker_full.task",
@@ -705,8 +586,6 @@ const dbDel=(st,id)=>dbOp(st,"readwrite",o=>o.delete(id));
 navigator.storage?.persist?.();
 async function showStorage(){try{const e=await navigator.storage.estimate();$("storageInfo").textContent=`Using ${(e.usage/1048576).toFixed(1)} MB of about ${(e.quota/1073741824).toFixed(1)} GB available on this device.`}catch{$("storageInfo").textContent="Stored on this device."}}
 const esc=t=>String(t??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
-const slug=t=>String(t??"").toLowerCase().replace(/[^a-z0-9]+/g,"");
-const guessType=n=>/lunge|split ?squat/i.test(n)?"lunge":/squat/i.test(n)?"squat":/deadlift|rdl/i.test(n)?"rdl":/push.?up/i.test(n)?"pushup":/curl/i.test(n)?"curl":"";
 let urls={};const urlFor=(key,blob)=>{if(urls[key])URL.revokeObjectURL(urls[key]);return urls[key]=URL.createObjectURL(blob)};
 
 /* ---- animation library ---- */
@@ -874,14 +753,19 @@ renderLib();const first=Object.keys(templates)[0];if(first)showTemplate(first);t
     if(reg.waiting&&navigator.serviceWorker.controller)offer(reg.waiting);
     reg.addEventListener("updatefound",()=>{const w=reg.installing;w.addEventListener("statechange",()=>{if(w.state==="installed"&&navigator.serviceWorker.controller)offer(w)})});
   });
-  let reloading=false;navigator.serviceWorker.addEventListener("controllerchange",()=>{if(!reloading){reloading=true;location.reload()}});
+  // reload only when an existing controller is replaced (Update), not when the first install claims this page
+  const hadController=!!navigator.serviceWorker.controller;
+  let reloading=false;navigator.serviceWorker.addEventListener("controllerchange",()=>{if(hadController&&!reloading){reloading=true;location.reload()}});
   // download the pose model in the background so the app works offline from the first launch
   navigator.serviceWorker.ready.then(async()=>{
     if(await checkReady())return;
     if(navigator.connection?.saveData)return;
+    // on first install the page is claimed just after activation; fetch through the worker so the model gets cached
+    if(!navigator.serviceWorker.controller)await new Promise(r=>navigator.serviceWorker.addEventListener("controllerchange",r,{once:true}));
     const local=await fetch("./models/pose_landmarker_full.task",{method:"HEAD"}).then(r=>r.ok&&!(r.headers.get("content-type")||"").includes("text/html")).catch(()=>false);
-    await fetch(local?"./models/pose_landmarker_full.task":"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task").catch(()=>{});
-    checkReady();
+    await fetch(local?"./models/pose_landmarker_full.task":"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task").then(r=>r.arrayBuffer()).catch(()=>{});
+    // the worker stores the model in the background after answering, so give it a moment
+    for(let i=0;i<20&&!(await checkReady());i++)await new Promise(r=>setTimeout(r,500));
   });
   net();
 })();

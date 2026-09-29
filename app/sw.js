@@ -1,11 +1,13 @@
 /* Form Coach service worker: app shell precache + offline pose model */
-const VERSION = "form-coach-v1.0.0";
+const VERSION = "form-coach-v1.0.1";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 const MODEL = "form-coach-model"; // kept across app updates: the model rarely changes and is large
 
 const PRECACHE = [
   "./", "./index.html", "./manifest.webmanifest",
+  "./src/pose/features.js", "./src/brain/segment.js", "./src/brain/template.js",
+  "./src/brain/builtins.js", "./src/brain/dtw.js", "./src/brain/names.js",
   "./vendor/jszip.min.js",
   "./vendor/tasks-vision/vision_bundle.mjs",
   "./vendor/tasks-vision/wasm/vision_wasm_internal.js",

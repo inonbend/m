@@ -1,0 +1,15 @@
+{
+  "name": "form-coach",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "npx http-server app -p 8080 -c-1 --silent",
+    "test": "vitest run",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "http-server": "^14.1.1",
+    "vitest": "^5.0.2"
+  }
+}
