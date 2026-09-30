@@ -47,6 +47,15 @@ python3 -m http.server 8080
 A phone on your Wi-Fi can't use the camera over plain `http://192.168…`;
 use one of the HTTPS hosts above.
 
+## Analyzing a video
+
+Train → **Analyze a video instead** accepts clips from the camera roll,
+including screen recordings of YouTube or TikTok. The app finds the person in
+the frame, follows the one doing the reps if there are several, and measures
+in 3D when the video isn't filmed from the side. Afterwards the video replays
+with the angle overlays, paused on your weakest rep; tap it to play. A side
+view with the whole body visible still gives the most accurate result.
+
 ## Releasing an update
 
 Change `VERSION` at the top of `sw.js` (e.g. `form-coach-v1.0.1`) and

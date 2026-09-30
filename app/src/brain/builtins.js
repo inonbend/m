@@ -19,7 +19,7 @@ export const MOTION={
   lunge:{dur:2.4,top:{shin:0,thigh:0,torso:3,ua:0,fa:0},bot:{shin:8,thigh:-85,torso:5,ua:0,fa:0},tip:"Drop straight down until your front thigh is level, torso upright."},
   rdl:{dur:3,top:{shin:0,thigh:0,torso:0,ua:0,fa:0},bot:{shin:12,thigh:-15,torso:78,ua:0,fa:0},tip:"Soft knees, push your hips back, keep your back flat."},
   pushup:{dur:2.2,top:{shin:64,thigh:64,torso:64},bot:{shin:73,thigh:73,torso:73},wrist:{x:2.84,y:0},tip:"Straight line from head to heels, lower until elbows reach 90°."},
-  curl:{dur:2.6,top:{shin:0,thigh:0,torso:0,ua:3,fa:8},bot:{shin:0,thigh:0,torso:0,ua:3,fa:150},tip:"Elbows pinned at your sides, curl all the way up, lower all the way down."}
+  curl:{dur:2.6,top:{shin:0,thigh:0,torso:0,ua:3,fa:8},bot:{shin:0,thigh:0,torso:0,ua:3,fa:135},tip:"Elbows pinned at your sides, curl all the way up, lower all the way down."}
 };
 export function builtin(exKey){
   const M=MOTION[exKey],E=EX[exKey],frames=[];

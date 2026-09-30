@@ -46,6 +46,9 @@ app/
   src/brain/builtins.js       # fk, MOTION, builtin
   src/brain/dtw.js            # compare (DTW scoring)
   src/brain/names.js          # slug, guessType
+  src/brain/track.js          # multi-person tracking in uploaded videos
+  src/brain/phase.js          # reference index per frame (for the replay overlays)
+  src/pose/roi.js             # automatic crop: find the exerciser in the frame
   sw.js                       # service worker (precache shell, cache-first model)
   manifest.webmanifest
   _headers                    # Netlify / Cloudflare Pages caching + wasm MIME
@@ -145,8 +148,17 @@ elbow, wrist, hip, knee, ankle. Ghosts are drawn anchored at the ankle
 - Smooth the primary signal (moving average, window 5).
 - Thresholds from the signal: `hi = max − 0.25·range`, `lo = min + 0.4·range`.
   Require range ≥ 25°.
-- State machine: while above `hi` keep updating the candidate start; dropping
-  below `lo` arms the rep; returning above `hi` closes it (min 6 frames).
+- State machine: while above `hi` the candidate start is the highest point
+  (the local peak); dropping below `lo` arms the rep; after returning above
+  `hi` the rep keeps going while the angle still rises and closes at the next
+  peak (min 6 frames). Reps therefore run top to top, covering the full range
+  like the reference (cutting at the threshold made every user rep look
+  "early" and cost ~10 points).
+- `segment` returns `[start, end, motionStart, motionEnd]`. The motion span
+  (`motionSpan`) leaves out pauses at the top: it starts at the last frame
+  still above halfway between the peak and `hi`. `repFrom(recs, feats, ms, me)`
+  uses it for `dur`, so tempo measures the movement only. Live mode applies
+  the same rules.
 - Looping animations often start mid-rep: if no rep is found, append the clip
   to itself and take the first rep found.
 - Live mode uses the reference's thresholds (`lo` loosened by +0.1·range).
@@ -172,7 +184,8 @@ two-link IK to a fixed wrist on the floor. Keyframes (degrees):
 - rdl: bottom {shin 12, thigh −15, torso 78}. Hip 180→87, knee 180→153.
 - pushup: body line angle 64°→73° from vertical, wrist fixed at (2.84, 0).
   Elbow 176→85.
-- curl: forearm 8°→150°. Elbow 175→33.
+- curl: forearm 8°→135°. Elbow 175→48 (was 150°/33°: MediaPipe measures a
+  full dumbbell curl at ~50°, so good curls were penalized).
 
 Interpolation: `p = (1 − cos(2π·i/(N−1)))/2` (smooth down and up).
 Durations: 2.2–3.0 s.
@@ -185,7 +198,9 @@ Durations: 2.2–3.0 s.
 - Feature score = `clamp(100 − 25·max(0, mean|z| − 0.6))`.
 - Tempo score from `ratio = rep.dur / tpl.dur`:
   `clamp(100·(1 − |ln ratio| / ln 2.2))`.
-- Overall = 0.85 × mean(feature scores) + 0.15 × tempo.
+- Overall = 0.85 × (½ mean + ½ worst of the feature scores) + 0.15 × tempo.
+  One real fault costs points instead of being averaged away
+  (`compare(rep, tpl, {worst})`, default 0.5).
 - Tips: for each feature and phase (down 0–23, mid 24–35, up 36–59), flag
   |mean deviation| > 6° and > 1 std. Top 2 by severity become sentences, for
   example "At the bottom, your knee angle is 18° larger than the reference.
@@ -229,6 +244,32 @@ Durations: 2.2–3.0 s.
   view); no complete rep found; no person detected; needs a tracking type.
 - License note: Vital Animations paid packs forbid redistributing the raw
   dataset. Never commit their MP4/JSON files to the repo.
+
+### 4.10b Uploaded videos (`processVideo`: Teach, Train "Analyze a video", Library)
+Real uploads are often screen recordings (YouTube/TikTok UI around a small
+player), filmed at an angle, with more than one person. The pipeline:
+1. **Crop** (`src/pose/roi.js`): detect (IMAGE mode, up to 3 poses) on 6 sample
+   frames of the full frame. If the needed joints are visible in ≥ 5, keep the
+   full frame. Otherwise try bands matching a 16:9 / 4:3 / 1:1 player along the
+   long axis plus a 3×3 grid of half-size windows. Pick the crop that sees the
+   person in the most frames (ties: more margin from the edges), then pad 8%.
+2. **Track** (`src/brain/track.js`): detect up to 3 poses per frame (VIDEO mode
+   on the crop), link them by hip position (distance < 0.9 × the largest
+   recent torso length, gap ≤ 1 s), keep the track whose primary angle moves
+   the most. The detector often alternates between people frame to frame.
+3. **3D when not side-on**: every candidate also gets features from MediaPipe
+   world landmarks (`features3`) and a side-view pose (`sidePose3`: project
+   onto the sagittal plane). If the view (median shoulder width / torso) is not
+   "side", these replace the 2D features and pose (`recs.depth`). Example: the
+   angled squat shows the knee at ~150° in 2D but ~88° in 3D. Side views keep
+   the 2D path. `angle`/`fromVertical` accept an optional `z`.
+4. **Replay**: after analysis the stage replays the video (cropped) with
+   skeleton, angle arcs/labels and correction arrows, paused at the key point
+   of the weakest rep; rep buttons seek; tap to play. The ghost is only drawn
+   for side views. Upper-body exercises without visible ankles anchor the ghost
+   at the hip (live mode too).
+- Delegate: GPU, except when WebGL is software (SwiftShader/llvmpipe, e.g.
+  headless or blocklisted GPUs), where CPU is ~3× faster. `?cpu` forces CPU.
 
 ### 4.11 Recording
 `MediaRecorder` on `canvas.captureStream(30)`, so overlays are recorded.
@@ -282,8 +323,12 @@ and bump `VERSION`.
 
 ### 7.1 Automated browser tests (Playwright with fake camera)
 
-Set up in `playwright.config.js` / `tests/e2e/app.spec.js`. Tests 1–4 are
-implemented and passing.
+Set up in `playwright.config.js` / `tests/e2e/`. Tests 1–4 (`app.spec.js`),
+5 (`live.spec.js`: rep counting from real footage via the fake camera), 6
+(library) and the real-video cases (`cases.spec.js`, section 7.4) are
+implemented and passing on a desktop and a phone (390×844) project.
+Screenshots land in `screenshots/` (gitignored). Test Chromium has no
+H.264/HEVC decoder, so fixtures are VP9 WebM; real phones play MP4/MOV.
 
 Launch Chromium with:
 
@@ -335,11 +380,31 @@ step yet) and covered by `tests/unit/brain.test.js`.
 - DTW is robust to a 1.5× time-stretched rep: tempo score drops, feature
   scores stay high.
 
+### 7.4 Real-video cases (local fixtures)
+`scripts/prepare-fixtures.sh squat.mov curl_bad.mov curl_good.mov` builds
+`tests/fixtures/local/` (gitignored: third-party footage, and the Vital
+license forbids redistributing its files). Current results:
+
+| case | video | result |
+|---|---|---|
+| 1 | good bicep curl, side view (TikTok recording) | 1 rep, 98, "match the reference well" |
+| 2 | bad bicep curl, elbow swings forward | 1 rep, ~80, "upper-arm swing 32° larger… Pin your elbow to your side" |
+| 3 | bodyweight squat, YouTube screen recording: small, angled, coach next to him | cropped to the player, tracks the squatter, 3D angles, 1 rep, ~90 |
+| – | Vital free pack (50 animations): Analyze all | 11 of 11 supported become references (front view, 3D) in ~2.5 min headless |
+| – | live camera fed the good curl | one rep per loop, 98–99 |
+
+`scripts/one.mjs`, `scripts/explore.mjs`, `scripts/diag*.mjs`, `scripts/live.mjs`
+and `scripts/tune.mjs` are the ad-hoc tools used to get there (see headers).
+
 ### 7.3 Real-device checklist
 iPhone Safari and installed PWA, Android Chrome and installed PWA: install
 flow, camera permission, portrait/landscape, frame rate (target ≥ 20 fps pose
 on mid-range phones), voice cues, recording playback (iOS gives mp4),
 offline launch in airplane mode, storage persistence after a restart.
+
+## 7.5 Deploy
+The repo's `main` branch is served by GitHub Pages (`.nojekyll` keeps every
+file as-is), so the app is at `https://inonbend.github.io/m/app/` once merged.
 
 ## 8. Suggested refactor (do this first, keep behavior identical)
 

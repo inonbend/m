@@ -116,8 +116,8 @@ button.big{font-size:19px;padding:15px 34px;width:100%}
 #toastClose{background:transparent;border:0;box-shadow:none;padding:8px}
 @media (display-mode: standalone){.wrap{padding-top:8px}}
 .cue,.stagebar,.startcard{--ink:#fff;--warn:#FFD60A;--good:#30D158;--bad:#FF453A}
-.stage.big{scroll-margin-top:calc(env(safe-area-inset-top,0px) + 8px)}
-@media(max-width:820px){header{position:static;padding:8px 10px;gap:8px;margin-bottom:12px}h1{font-size:24px}
+.stage.big{scroll-margin-top:calc(env(safe-area-inset-top,0px) + 96px)} /* clear the sticky header */
+@media(max-width:820px){.stage.big{scroll-margin-top:calc(env(safe-area-inset-top,0px) + 8px)}header{position:static;padding:8px 10px;gap:8px;margin-bottom:12px}h1{font-size:24px}
   #trainEx{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:0 -4px;padding:2px 4px}#trainEx::-webkit-scrollbar{display:none}#trainEx button{flex:none}
   .stagebar button,.chip{padding:7px 12px;font-size:14px}.trainlayout>.box.stack{padding:12px}}
 .hidden{display:none!important}
@@ -184,6 +184,11 @@ label.file input{position:absolute;opacity:0;width:1px;height:1px}
       <span class="chip" id="liveStatus">Ready</span>
       <button id="camStop">Stop camera</button>
       <button id="recBtn" disabled>Record</button>
+    </div>
+    <div class="stagebar hidden" id="replayBar">
+      <span class="chip">Your video</span>
+      <button id="replayPlay">Play</button>
+      <button id="replayClose">Close</button>
     </div>
     <div class="startcard" id="trainEmpty">
       <p id="startText">Stand side-on with your whole body in frame.</p>
@@ -261,8 +266,11 @@ import {PoseLandmarker, FilesetResolver} from "./vendor/tasks-vision/vision_bund
 const $=id=>document.getElementById(id);
 
 /* ================= geometry, features and the brain (pure modules in ./src) ================= */
-import {N,FEATS,EX,PTS,BONES,record} from "./src/pose/features.js";
-import {smooth,thresholds,segment,repFrom} from "./src/brain/segment.js";
+import {N,FEATS,EX,PTS,IDX,BONES,record,features3,sidePose3} from "./src/pose/features.js";
+import {roiCandidates,poseFit,pickRoi,padRoi} from "./src/pose/roi.js";
+import {buildTracks,pickTrack} from "./src/brain/track.js";
+import {phaseIndices} from "./src/brain/phase.js";
+import {smooth,thresholds,segment,repFrom,motionSpan} from "./src/brain/segment.js";
 import {buildTemplate} from "./src/brain/template.js";
 import {builtin} from "./src/brain/builtins.js";
 import {compare} from "./src/brain/dtw.js";
@@ -284,34 +292,66 @@ async function getModel(msgEl){
   if(landmarker)return landmarker;msgEl&&(msgEl.textContent="Loading the pose model…");
   const fs=await FilesetResolver.forVisionTasks(new URL("./vendor/tasks-vision/wasm",location.href).href);
   const opts=async d=>({baseOptions:{modelAssetPath:await modelUrl(),delegate:d},runningMode:"VIDEO",numPoses:1});
-  try{landmarker=await PoseLandmarker.createFromOptions(fs,await opts("GPU"))}
+  // software WebGL (SwiftShader/llvmpipe: headless browsers, blocklisted GPUs) is slower than the CPU delegate
+  let soft=/[?&]cpu\b/.test(location.search);
+  try{const gl=document.createElement("canvas").getContext("webgl"),ext=gl?.getExtension("WEBGL_debug_renderer_info");
+    soft||=!gl||/swiftshader|llvmpipe|software/i.test(gl.getParameter(ext?ext.UNMASKED_RENDERER_WEBGL:gl.RENDERER))}catch{}
+  try{landmarker=await PoseLandmarker.createFromOptions(fs,await opts(soft?"CPU":"GPU"))}
   catch{landmarker=await PoseLandmarker.createFromOptions(fs,await opts("CPU"))}
   return landmarker;
 }
+// drawing scale: canvas width for landscape frames; portrait frames get the same visual size
+const scaleOf=(W,H)=>Math.max(W,H*.75);
 function drawSkel(g,lm,ids,W,H,mirror,color="#F2F4F3"){
-  const P=i=>[(mirror?1-lm[i].x:lm[i].x)*W,lm[i].y*H];
-  g.lineWidth=Math.max(3,W/160);g.lineCap="round";g.strokeStyle=color;
+  const P=i=>[(mirror?1-lm[i].x:lm[i].x)*W,lm[i].y*H],Z=scaleOf(W,H);
+  g.lineWidth=Math.max(3,Z/160);g.lineCap="round";g.strokeStyle=color;
   BONES.forEach(([a,b])=>{g.beginPath();g.moveTo(...P(ids[a]));g.lineTo(...P(ids[b]));g.stroke()});
-  ids.slice(0,7).forEach(i=>{g.fillStyle="#30D158";g.beginPath();g.arc(...P(i),W/120,0,7);g.fill()});
+  ids.slice(0,7).forEach(i=>{g.fillStyle="#30D158";g.beginPath();g.arc(...P(i),Z/120,0,7);g.fill()});
+}
+const seekTo=(v,t)=>new Promise(r=>{v.onseeked=r;v.currentTime=t});
+/* where in the frame is the exerciser? try crops on a few sample frames (see src/pose/roi.js) */
+async function findRoi(v,E,W,H,K=6){
+  const sides=["L","R"].map(s=>E.need.map(n=>IDX[s][PTS.indexOf(n)])),fit=lm=>Math.max(...sides.map(ix=>poseFit(lm,ix)));
+  const cands=roiCandidates(W,H),scores=cands.map(()=>[]),c=document.createElement("canvas"),g=c.getContext("2d");
+  const score=async(ci)=>{for(let k=0;k<K;k++){await seekTo(v,v.duration*(k+.5)/K);const [x,y,w,h]=cands[ci],sc=Math.min(1,640/Math.max(W*w,H*h));
+    c.width=Math.round(W*w*sc);c.height=Math.round(H*h*sc);g.drawImage(v,W*x,H*y,W*w,H*h,0,0,c.width,c.height);
+    scores[ci].push(Math.max(0,...(landmarker.detect(c).landmarks||[]).map(fit)))}};
+  await landmarker.setOptions({runningMode:"IMAGE",numPoses:3});
+  try{await score(0);if(scores[0].filter(Boolean).length>=K-1)return cands[0]; // the full frame works: keep it
+    for(let ci=1;ci<cands.length;ci++)await score(ci)}
+  finally{await landmarker.setOptions({runningMode:"VIDEO"})}
+  const r=pickRoi(cands,scores);return r===cands[0]?r:padRoi(r);
 }
 async function processVideo(file,exKey,canvas,progEl,fps=15){
   await getModel();
   const v=document.createElement("video");v.muted=true;v.playsInline=true;v.preload="auto";v.src=URL.createObjectURL(file);
   await new Promise((r,e)=>{v.onloadeddata=r;v.onerror=()=>e(new Error("This video format can't be read"))});
-  const g=canvas.getContext("2d");canvas.width=v.videoWidth;canvas.height=v.videoHeight;
-  const aspect=v.videoWidth/v.videoHeight,recs=[],ratios=[];progEl.classList.remove("hidden");
-  for(let t=0;t<v.duration;t+=1/fps){
-    await new Promise(r=>{v.onseeked=r;v.currentTime=t});
-    const res=landmarker.detectForVideo(v,nextTs()),lm=res.landmarks?.[0];
-    g.drawImage(v,0,0);
-    if(lm){const sw=Math.abs(lm[11].x-lm[12].x)*aspect,
-        tl=Math.hypot((lm[11].x+lm[12].x-lm[23].x-lm[24].x)/2*aspect,(lm[11].y+lm[12].y-lm[23].y-lm[24].y)/2);ratios.push(sw/(tl||1));
-      const rec=record(lm,aspect,exKey,t);if(rec){recs.push(rec);drawSkel(g,lm,rec.j.ids,canvas.width,canvas.height,false)}}
-    progEl.value=t/v.duration;
-  }
+  const E=EX[exKey],W=v.videoWidth,H=v.videoHeight;progEl.classList.remove("hidden");progEl.value=0;
+  const [rx,ry,rw,rh]=await findRoi(v,E,W,H),sc=Math.min(1,1280/Math.max(W*rw,H*rh));
+  const g=canvas.getContext("2d");canvas.width=Math.round(W*rw*sc);canvas.height=Math.round(H*rh*sc);
+  const aspect=canvas.width/canvas.height,frames=[];let poseFrames=0;
+  await landmarker.setOptions({numPoses:3}); // other people may be in the video: track them all, keep the exerciser
+  try{
+    for(let t=0;t<v.duration;t+=1/fps){
+      await seekTo(v,t);
+      g.drawImage(v,W*rx,H*ry,W*rw,H*rh,0,0,canvas.width,canvas.height);
+      const res=landmarker.detectForVideo(canvas,nextTs()),all=res.landmarks||[],cands=[];
+      if(all.length)poseFrames++;
+      all.forEach((lm,i)=>{const rec=record(lm,aspect,exKey,t);if(rec){rec.lm=lm;const wl=res.worldLandmarks?.[i];if(wl){rec.f3=features3(wl,rec.j.ids,exKey);rec.p3=sidePose3(wl,rec.j.ids)}cands.push(rec);drawSkel(g,lm,rec.j.ids,canvas.width,canvas.height,false)}});
+      frames.push({t,cands});
+      progEl.value=t/v.duration;
+    }
+  }finally{await landmarker.setOptions({numPoses:1})}
   progEl.classList.add("hidden");URL.revokeObjectURL(v.src);
-  recs.forEach(r=>delete r.j);ratios.sort((a,b)=>a-b);
-  const m=ratios[ratios.length>>1]??null;recs.view=m===null?"no person found":m<.35?"side":m>.6?"front":"angled";recs.poseFrames=ratios.length;
+  const tracks=buildTracks(frames),recs=pickTrack(tracks,E.primary),ratios=[];
+  recs.forEach(r=>{const lm=r.lm,sw=Math.abs(lm[11].x-lm[12].x)*aspect,
+    tl=Math.hypot((lm[11].x+lm[12].x-lm[23].x-lm[24].x)/2*aspect,(lm[11].y+lm[12].y-lm[23].y-lm[24].y)/2);ratios.push(sw/(tl||1))});
+  ratios.sort((a,b)=>a-b);
+  const m=ratios[ratios.length>>1]??null;recs.view=m===null?(poseFrames?"no full body found":"no person found"):m<.35?"side":m>.6?"front":"angled";recs.poseFrames=poseFrames;
+  // not filmed from the side: 2D angles are foreshortened, measure them in 3D instead
+  recs.depth=recs.view!=="side"&&recs.length>0&&recs.every(r=>r.f3);if(recs.depth)recs.forEach(r=>{r.f=r.f3;r.pose=r.p3});
+  recs.forEach(r=>{delete r.f3;delete r.p3});
+  recs.roi=[rx,ry,rw,rh];recs.people=tracks.filter(t=>t.length>=10).length>1;
   return recs;
 }
 
@@ -353,7 +393,7 @@ async function learnFromVideos(blobs,exKey,name,canvas,progEl,msgEl){
     if(recs.length<10)continue;
     const prim=smooth(recs.map(r=>r.f[E.primary])),th=thresholds(prim);
     if(th.range<25)continue;
-    segment(prim,th.hi,th.lo).forEach(([s,e])=>reps.push(repFrom(recs.slice(s,e+1),E.feats)));
+    segment(prim,th.hi,th.lo).forEach(([s,e,ms,me])=>reps.push(repFrom(recs.slice(s,e+1),E.feats,ms-s,me-s)));
   }
   const prev=templates[name];
   if(prev&&prev.exercise===exKey&&!prev.builtin)reps=prev.reps.concat(reps);
@@ -405,13 +445,15 @@ Object.entries(EX).forEach(([k,e])=>{const b=document.createElement("button");b.
   b.onclick=()=>{trainEx=k;[...$("trainEx").children].forEach(x=>x.setAttribute("aria-pressed",x===b));fillRefs()};$("trainEx").append(b)});
 function liveCue(text){const now=performance.now();if(now-session.lastCue<2500)return;session.lastCue=now;cue(text,"var(--warn)");say(text)}
 let showVec=true,showGhost=true,showPip=true;
-function drawGuide(j,p,W,H){
-  const dir=(j.toe.x-j.heel.x)>=0?1:-1,t=Math.hypot(j.sh.x-j.hip.x,j.sh.y-j.hip.y)*H,ax=j.ankle.x*H,ay=j.ankle.y*H,
-    P=n=>[W-(ax+(p[n][0]-p[6][0])*dir*t),ay+(p[n][1]-p[6][1])*t];
+function drawGuide(j,p,W,H,mirror=true){
+  // anchor at the ankle; upper-body exercises often have the feet out of frame, then anchor at the hip
+  const A=j.ankle.v>.5?6:4,an=PTS[A],Z=scaleOf(W,H);
+  const dir=(j.toe.x-j.heel.x)>=0?1:-1,t=Math.hypot(j.sh.x-j.hip.x,j.sh.y-j.hip.y)*H,ax=j[an].x*H,ay=j[an].y*H,
+    X=x=>mirror?W-x:x,P=n=>[X(ax+(p[n][0]-p[A][0])*dir*t),ay+(p[n][1]-p[A][1])*t];
   const pts={};PTS.forEach((n,k)=>pts[n]=P(k));if(!showGhost)return pts;
-  ctx.strokeStyle="rgba(48,209,88,.55)";ctx.lineWidth=W/55;ctx.lineCap="round";
-  BONES.forEach(([a,b])=>{ctx.beginPath();ctx.moveTo(...P(a));ctx.lineTo(...P(b));ctx.stroke()});
-  ctx.fillStyle="rgba(48,209,88,.55)";ctx.beginPath();ctx.arc(...P(0),W/45,0,7);ctx.fill();return pts;
+  ctx.strokeStyle="rgba(48,209,88,.55)";ctx.lineWidth=Z/55;ctx.lineCap="round";
+  BONES.forEach(([a,b])=>{if(A===4&&(a>4||b>4))return;ctx.beginPath();ctx.moveTo(...P(a));ctx.lineTo(...P(b));ctx.stroke()});
+  ctx.fillStyle="rgba(48,209,88,.55)";ctx.beginPath();ctx.arc(...P(0),Z/45,0,7);ctx.fill();return pts;
 }
 /* joint vertex and the two rays that define each feature's angle */
 const VEC={knee:["hip","knee","ankle"],hip:["sh","hip","knee"],elbow:["sh","el","wr"],line:["sh","hip","ankle"],torso:["sh","hip","UP"],arm:["el","sh","DOWN"]};
@@ -419,9 +461,10 @@ const zColor=z=>Math.abs(z)<1.2?"#30D158":Math.abs(z)<2.2?"#FFD60A":"#FF453A";
 function arrow(x0,y0,x1,y1,color,w){const a=Math.atan2(y1-y0,x1-x0),h=w*3.2;ctx.strokeStyle=ctx.fillStyle=color;ctx.lineWidth=w;
   ctx.beginPath();ctx.moveTo(x0,y0);ctx.lineTo(x1-Math.cos(a)*h*.8,y1-Math.sin(a)*h*.8);ctx.stroke();
   ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x1-h*Math.cos(a-.45),y1-h*Math.sin(a-.45));ctx.lineTo(x1-h*Math.cos(a+.45),y1-h*Math.sin(a+.45));ctx.closePath();ctx.fill()}
-function drawVectors(j,f,T,best,ghost,W,H){
-  const S=n=>[W-j[n].x*H,j[n].y*H],u=W/320,E=EX[T.exercise];
+function drawVectors(j,f,T,best,ghost,W,H,mirror=true){
+  const S=n=>[mirror?W-j[n].x*H:j[n].x*H,j[n].y*H],u=scaleOf(W,H)/320,E=EX[T.exercise];
   ctx.font=`700 ${Math.round(u*10)}px -apple-system,BlinkMacSystemFont,sans-serif`;ctx.textBaseline="middle";
+  const labels=[];
   E.feats.forEach((k,idx)=>{
     const [a,v,c]=VEC[k],V=S(v),A=S(a),C=c==="UP"?[V[0],V[1]-H*.2]:c==="DOWN"?[V[0],V[1]+H*.2]:S(c);
     const z=(f[k]-T.mean[k][best])/T.std[k][best],col=zColor(z),target=Math.round(T.mean[k][best]);
@@ -432,15 +475,21 @@ function drawVectors(j,f,T,best,ghost,W,H){
     let a1=Math.atan2(A[1]-V[1],A[0]-V[0]),a2=Math.atan2(C[1]-V[1],C[0]-V[0]),d=a2-a1;while(d>Math.PI)d-=2*Math.PI;while(d<-Math.PI)d+=2*Math.PI;
     const r=u*(16+idx*4);ctx.strokeStyle=col;ctx.lineWidth=u*3;ctx.beginPath();ctx.arc(V[0],V[1],r,a1,a1+d,d<0);ctx.stroke();
     // label: your angle vs target
-    const mid=a1+d/2,lx=V[0]+Math.cos(mid)*(r+u*26),ly=V[1]+Math.sin(mid)*(r+u*14),txt=`${Math.round(f[k])}°`,sub=`target ${target}°`;
-    ctx.font=`700 ${Math.round(u*11)}px -apple-system,BlinkMacSystemFont,sans-serif`;const w1=ctx.measureText(txt).width;
-    ctx.font=`600 ${Math.round(u*7)}px -apple-system,BlinkMacSystemFont,sans-serif`;const w2=ctx.measureText(sub).width,bw=Math.max(w1,w2)+u*12;
-    ctx.fillStyle="rgba(20,20,26,.62)";ctx.beginPath();ctx.roundRect?ctx.roundRect(lx-bw/2,ly-u*13,bw,u*26,u*8):ctx.rect(lx-bw/2,ly-u*13,bw,u*26);ctx.fill();
-    ctx.textAlign="center";ctx.fillStyle=col;ctx.font=`700 ${Math.round(u*11)}px -apple-system,BlinkMacSystemFont,sans-serif`;ctx.fillText(txt,lx,ly-u*4);
-    ctx.fillStyle="rgba(255,255,255,.75)";ctx.font=`600 ${Math.round(u*7)}px -apple-system,BlinkMacSystemFont,sans-serif`;ctx.fillText(sub,lx,ly+u*7);ctx.textAlign="start";
+    const mid=a1+d/2;labels.push({lx:V[0]+Math.cos(mid)*(r+u*26),ly:V[1]+Math.sin(mid)*(r+u*14),txt:`${Math.round(f[k])}°`,sub:`target ${target}°`,col});
     // correction arrow: where this joint should move to match the reference
     if(ghost&&Math.abs(z)>=1.2){const G=ghost[v==="sh"&&c==="DOWN"?"el":v];const P=S(v==="sh"&&c==="DOWN"?"el":v),dx=G[0]-P[0],dy=G[1]-P[1];
       if(Math.hypot(dx,dy)>u*8)arrow(P[0],P[1],G[0],G[1],col,u*2.4)}
+  });
+  // labels last, on top, nudged apart so they don't overlap
+  const placed=[];
+  labels.forEach(({lx,ly,txt,sub,col})=>{
+    ctx.font=`700 ${Math.round(u*11)}px -apple-system,BlinkMacSystemFont,sans-serif`;const w1=ctx.measureText(txt).width;
+    ctx.font=`600 ${Math.round(u*7)}px -apple-system,BlinkMacSystemFont,sans-serif`;const w2=ctx.measureText(sub).width,bw=Math.max(w1,w2)+u*12,bh=u*26;
+    for(let n=0;n<12&&placed.some(p=>Math.abs(p.x-lx)<(p.w+bw)/2+u*2&&Math.abs(p.y-ly)<bh+u*2);n++)ly+=bh/2;
+    placed.push({x:lx,y:ly,w:bw});
+    ctx.fillStyle="rgba(20,20,26,.62)";ctx.beginPath();ctx.roundRect?ctx.roundRect(lx-bw/2,ly-u*13,bw,bh,u*8):ctx.rect(lx-bw/2,ly-u*13,bw,bh);ctx.fill();
+    ctx.textAlign="center";ctx.fillStyle=col;ctx.font=`700 ${Math.round(u*11)}px -apple-system,BlinkMacSystemFont,sans-serif`;ctx.fillText(txt,lx,ly-u*4);
+    ctx.fillStyle="rgba(255,255,255,.75)";ctx.font=`600 ${Math.round(u*7)}px -apple-system,BlinkMacSystemFont,sans-serif`;ctx.fillText(sub,lx,ly+u*7);ctx.textAlign="start";
   });
 }
 const hexFor=s=>s>=80?"var(--good)":s>=55?"var(--warn)":"var(--bad)";
@@ -448,7 +497,7 @@ const say=t=>{if(!voiceOn||!window.speechSynthesis)return;speechSynthesis.cancel
 const tpl=()=>templates[$("tplSel").value];
 function cue(t,color){const c=$("cue");c.classList.remove("hidden");c.textContent=t;c.style.color=color||"var(--ink)"}
 function resetSession(){
-  session={results:[],tipCount:{},buf:[],cand:null,down:false};
+  session={results:[],tipCount:{},buf:[],cand:null,down:false,end:null,prevAbove:false};
   ["reps"].forEach(id=>$(id).textContent="0");$("last").textContent="–";$("avg").textContent="–";
   $("meters").innerHTML='<p class="stat" style="margin:0">Complete a rep to see scores.</p>';$("tips").innerHTML='<li class="stat">Nothing yet.</li>';$("replist").innerHTML="";
   const T=tpl();ghosts.trainGhost=T?{ref:T.pose,dur:T.dur,ex:T.exercise}:{};
@@ -456,7 +505,7 @@ function resetSession(){
   Object.assign(session,{asc:false,minV:Infinity,bad:{},lastCue:0,mid:null});
   if(T&&!camStream){$("cue").classList.add("hidden");$("trainEmpty").classList.remove("hidden");$("startText").textContent=(T.tip||"Watch the reference, then start the camera.")+" Stand side-on with your whole body in frame."}
 }
-$("tplSel").onchange=()=>{resetSession();$("camBtn").disabled=$("userFile").disabled=!tpl();loadPip(tpl())};
+$("tplSel").onchange=()=>{stopReplay();resetSession();$("camBtn").disabled=$("userFile").disabled=!tpl();loadPip(tpl())};
 /* ---- reference animation picture-in-picture, scrubbed to your phase ---- */
 let pipUrl=null,pipT=null,lastSeek=0;
 async function loadPip(T){
@@ -482,6 +531,7 @@ $("voice").onclick=e=>{voiceOn=!voiceOn;e.target.textContent=voiceOn?"Voice on":
 function showResult(idx,speak){
   const r=session.results[idx],T=tpl();
   ghosts.trainGhost={ref:T.pose,user:r.aligned,dur:T.dur,ex:T.exercise};$("cmpTitle").textContent=`Rep ${idx+1} vs. reference`;
+  if(replay)replaySeekRep(idx);
   $("meters").innerHTML=Object.entries(r.parts).map(([k,v])=>`<div class="meter"><span>${k}</span><i><span style="width:${v}%;background:${hexFor(v)}"></span></i><span>${Math.round(v)}</span></div>`).join("");
   if(speak){
     if(r.tips[0]){cue(`${r.score} — ${r.tips[0].text}`,hexFor(r.score));say(`${idx+1}. ${r.tips[0].short}`)}
@@ -505,7 +555,7 @@ $("camBtn").onclick=async()=>{
   if(camStream){if(recorder)recorder.stop();camStream.getTracks().forEach(t=>t.stop());camStream=null;$("recBtn").disabled=true;
     $("stagebar").classList.add("hidden");$("trainEmpty").classList.remove("hidden");$("startText").textContent=(tpl()?.tip||"")+" Stand side-on with your whole body in frame.";return}
   try{
-    $("trainEmpty").classList.remove("hidden");await getModel($("startText"));
+    stopReplay();$("trainEmpty").classList.remove("hidden");await getModel($("startText"));
     $("startText").textContent="Allow camera access to begin.";
     camStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:{ideal:960},height:{ideal:720}},audio:false});
     video.srcObject=camStream;await video.play();$("trainEmpty").classList.add("hidden");$("stagebar").classList.remove("hidden");document.querySelector(".stage.big").scrollIntoView({behavior:"smooth",block:"start"});$("recBtn").disabled=false;
@@ -539,10 +589,15 @@ function live(){
         // real-time form check against the reference at this exact phase
         E.feats.filter(k=>k!==E.primary).forEach(k=>{const z=(rec.f[k]-T.mean[k][best])/T.std[k][best];
           S.bad[k]=Math.abs(z)>2.2?(S.bad[k]||0)+1:0;if(S.bad[k]===8)liveCue(FEATS[k].hint[z>0?"+":"-"])});
-        if(!S.down){if(v>T.hi)S.cand=i;else if(v<T.lo&&S.cand!==null)S.down=true}
-        else if(v>T.hi){S.down=false;
-          if(i-S.cand>=6)addResult(repFrom(S.buf.slice(S.cand,i+1),E.feats),true);
-          S.buf=S.buf.slice(i);S.cand=0}
+        // reps run top to top (local peaks), like segment() in src/brain/segment.js
+        const above=v>T.hi;
+        if(S.end!=null){if(v>=S.endV){S.end=i;S.endV=v}
+          else{const sl=S.buf.slice(S.cand,S.end+1),[ms,me]=motionSpan(sl.map(r=>r.f[E.primary]),T.hi);
+            addResult(repFrom(sl,E.feats,ms,me),true);S.buf=S.buf.slice(S.end);S.cand=0;S.candV=S.endV;S.end=null;S.down=false;S.prevAbove=true}}
+        if(S.end==null){const k=S.buf.length-1;
+          if(!S.down){if(above){if(!S.prevAbove||S.cand===null||v>=S.candV){S.cand=k;S.candV=v}}else if(v<T.lo&&S.cand!==null)S.down=true}
+          else if(above){if(k-S.cand>=6){S.end=k;S.endV=v}else{S.down=false;S.cand=k;S.candV=v}}
+          S.prevAbove=above}
         if(!S.down&&S.buf.length>600){S.buf=S.buf.slice(-60);S.cand=null}
         const st=$("liveStatus");if(st.textContent!==(S.down?"In rep":"Ready")){st.textContent=S.down?"In rep":"Ready";st.classList.toggle("on",S.down)}
       }else cue("Move back — I can't see all the joints I need.","var(--warn)");
@@ -555,17 +610,52 @@ function live(){
 async function analyzeUserVideo(file){
   if(!file)return;const T=tpl(),E=EX[T.exercise];
   if(camStream)$("camBtn").click();
-  $("trainEmpty").classList.add("hidden");resetSession();cue("Analyzing your video…");
+  stopReplay();resetSession();$("trainEmpty").classList.add("hidden");cue("Analyzing your video…");
   try{
     const recs=await processVideo(file,T.exercise,cv,$("prog2"));
     const prim=smooth(recs.map(r=>r.f[E.primary])),reps=segment(prim,T.hi,T.lo);
     if(!reps.length)throw new Error("No complete reps found — film side-on with your whole body in frame");
-    reps.forEach(([s,en])=>addResult(repFrom(recs.slice(s,en+1),E.feats),false));
+    reps.forEach(([s,en,ms,me])=>addResult(repFrom(recs.slice(s,en+1),E.feats,ms-s,me-s),false));
+    startReplay(file,recs,T,reps);
+    window.fcLast={recs:recs.map(r=>({t:r.t,f:r.f,pose:r.pose})),reps,view:recs.view,depth:recs.depth,roi:recs.roi}; // for tests and debugging
     const worst=session.results.reduce((w,r,i,a)=>r.score<a[w].score?i:w,0);showResult(worst,false);
-    cue(`${reps.length} reps found. Average ${$("avg").textContent}. Showing your weakest rep (${worst+1}).`);
-  }catch(err){cue((err.message||err)+".","var(--warn)")}
+    const notes=[recs.depth&&`${recs.view==="front"?"Front":"Angled"} view: measured in 3D.`,recs.people&&"Tracking the person doing the reps."].filter(Boolean).join(" ");
+    cue(`${reps.length} rep${reps.length>1?"s":""} found, average ${$("avg").textContent}. Rep ${worst+1} (weakest), ${E.mid.toLowerCase()}. Tap to play. ${notes}`);
+  }catch(err){cue((err.message||err)+".","var(--warn)");$("trainEmpty").classList.remove("hidden")}
 }
 $("userFile").onchange=e=>{analyzeUserVideo(e.target.files[0]);e.target.value=""};
+/* ---- replay the analyzed video with the same overlays as the live camera ---- */
+let replay=null;
+function stopReplay(){if(!replay)return;replay.v.pause();URL.revokeObjectURL(replay.v.src);replay=null;$("replayBar").classList.add("hidden")}
+function startReplay(file,recs,T,reps){
+  stopReplay();
+  const v=document.createElement("video");v.muted=true;v.playsInline=true;v.loop=true;v.preload="auto";v.src=URL.createObjectURL(file);
+  const R=replay={v,recs,reps,T,best:phaseIndices(recs,T),key:""},[rx,ry,rw,rh]=recs.roi;
+  $("replayBar").classList.remove("hidden");$("replayPlay").textContent="Play";
+  v.onplay=()=>$("replayPlay").textContent="Pause";v.onpause=()=>$("replayPlay").textContent="Play";
+  const draw=()=>{
+    if(replay!==R)return;
+    const t=v.currentTime,key=t+"|"+showVec+showGhost;
+    if(v.readyState>=2&&key!==R.key){R.key=key;
+      const W=v.videoWidth,H=v.videoHeight,sc=Math.min(1,1280/Math.max(W*rw,H*rh));
+      cv.width=Math.round(W*rw*sc);cv.height=Math.round(H*rh*sc);ctx.drawImage(v,W*rx,H*ry,W*rw,H*rh,0,0,cv.width,cv.height);
+      let k=-1,d=.1;recs.forEach((r,i)=>{const e=Math.abs(r.t-t);if(e<d){d=e;k=i}});
+      if(k>=0){const r=recs[k],b=R.best[k];
+        // the ghost is a side-view silhouette: only meaningful when filmed from the side
+        const g=recs.depth?null:drawGuide(r.j,T.pose[b],cv.width,cv.height,false);
+        drawSkel(ctx,r.lm,r.j.ids,cv.width,cv.height,false);
+        if(showVec)drawVectors(r.j,r.f,T,b,g,cv.width,cv.height,false)}}
+    requestAnimationFrame(draw)};
+  requestAnimationFrame(draw);
+}
+function replaySeekRep(i){ // pause at the bottom of rep i
+  const R=replay;if(!R||!R.reps[i])return;const [s,e]=R.reps[i],P=EX[R.T.exercise].primary;let lo=s;
+  for(let k=s;k<=e;k++)if(R.recs[k].f[P]<R.recs[lo].f[P])lo=k;
+  R.v.pause();R.v.currentTime=R.recs[lo].t;
+}
+$("replayPlay").onclick=()=>{if(!replay)return;replay.v.paused?replay.v.play().catch(()=>{}):replay.v.pause()};
+cv.onclick=()=>$("replayPlay").click();
+$("replayClose").onclick=()=>{stopReplay();ctx.clearRect(0,0,cv.width,cv.height);$("cue").classList.add("hidden");$("trainEmpty").classList.remove("hidden")};
 
 /* ================= tabs ================= */
 const TABS={teach:"tabTeach",train:"tabTrain",library:"tabLibrary",records:"tabRecords"};
@@ -646,7 +736,7 @@ async function analyzeAnimation(a,canvas,prog){
   const E=EX[a.type];let recs=await processVideo(a.blob,a.type,canvas,prog);const view=recs.view;
   let reps=[];
   const find=rs=>{if(rs.length<10)return[];const prim=smooth(rs.map(r=>r.f[E.primary])),th=thresholds(prim);
-    return th.range<25?[]:segment(prim,th.hi,th.lo).map(([s,e])=>({...repFrom(rs.slice(s,e+1),E.feats),t0:rs[s].t,t1:rs[e].t}))};
+    return th.range<25?[]:segment(prim,th.hi,th.lo).map(([s,e,ms,me])=>({...repFrom(rs.slice(s,e+1),E.feats,ms-s,me-s),t0:rs[s].t,t1:rs[e].t}))};
   reps=find(recs);
   if(!reps.length&&recs.length>=10){ // looping animations often start mid-rep: play the loop twice
     const last=recs[recs.length-1].t+1/15;reps=find(recs.concat(recs.map(r=>({...r,t:r.t+last})))).slice(0,1)}
@@ -655,7 +745,7 @@ async function analyzeAnimation(a,canvas,prog){
   else if(!reps.length)status=view==="side"?"no complete rep found":`no rep found (${view} view, needs side view)`;
   else{const name=a.name+" (animation)",L=recs[recs.length-1].t+1/15;templates[name]=buildTemplate(name,a.type,reps,1);
     templates[name].anim={id:a.id,t0:reps[0].t0%L,t1:reps[0].t1,loop:L};save();a.templateName=name;
-    status=view==="side"?"learned":`learned, less accurate (${view} view)`}
+    status=view==="side"?"learned":recs.depth?`learned (${view} view, measured in 3D)`:`learned, less accurate (${view} view)`}
   a.analysis={status,view,reps:reps.length,date:Date.now()};await dbPut("animations",a);return a.analysis;
 }
 $("libLearn").onclick=async()=>{

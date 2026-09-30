@@ -1,8 +1,9 @@
 /* Rep scoring with DTW — extracted verbatim from index.html; keep behavior identical. */
 import {N,EX,FEATS,clamp} from "../pose/features.js";
 
-export function compare(rep,tpl){
-  const E=EX[tpl.exercise],F=E.feats,W=12,INF=1e9;
+// opt.band: DTW band width; opt.worst: weight of the worst feature in the score (one real fault should cost points)
+export function compare(rep,tpl,opt={}){
+  const E=EX[tpl.exercise],F=E.feats,W=opt.band??12,INF=1e9;
   const cost=(i,j)=>Math.sqrt(F.reduce((s,k)=>s+((rep.f[k][i]-tpl.mean[k][j])/tpl.std[k][j])**2,0));
   const D=Array.from({length:N+1},()=>new Float64Array(N+1).fill(INF));D[0][0]=0;
   for(let i=1;i<=N;i++)for(let j=Math.max(1,i-W);j<=Math.min(N,i+W);j++)D[i][j]=cost(i-1,j-1)+Math.min(D[i-1][j],D[i][j-1],D[i-1][j-1]);
@@ -17,7 +18,7 @@ export function compare(rep,tpl){
       if(Math.abs(m)>6&&Math.abs(m)/sd>1)cands.push({k,m,sev:Math.abs(m)/sd,phase:name})});
   });
   const ratio=rep.dur/tpl.dur;parts["Tempo"]=clamp(100*(1-Math.abs(Math.log(ratio))/Math.log(2.2)));
-  const featAvg=F.reduce((s,k)=>s+parts[FEATS[k].label],0)/F.length;
+  const featMean=F.reduce((s,k)=>s+parts[FEATS[k].label],0)/F.length,featMin=Math.min(...F.map(k=>parts[FEATS[k].label])),ww=opt.worst??.5,featAvg=featMean*(1-ww)+featMin*ww;
   const score=Math.round(featAvg*.85+parts.Tempo*.15);
   cands.sort((a,b)=>b.sev-a.sev);
   const tips=cands.slice(0,2).map(c=>({key:c.k+c.phase,short:FEATS[c.k].hint[c.m>0?"+":"-"],

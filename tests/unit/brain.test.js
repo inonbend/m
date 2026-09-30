@@ -78,7 +78,7 @@ describe("built-in animations", () => {
     expect(min(t.mean.torso)).toBeCloseTo(5, 0);
     expect(max(t.mean.torso)).toBeCloseTo(40, 0);
   });
-  it.each([["lunge", "knee", 87], ["rdl", "hip", 87], ["pushup", "elbow", 85], ["curl", "elbow", 33]])(
+  it.each([["lunge", "knee", 87], ["rdl", "hip", 87], ["pushup", "elbow", 85], ["curl", "elbow", 48]])(
     "%s: %s bottoms out near %i°", (ex, k, bottom) => {
       expect(Math.abs(min(builtin(ex).mean[k]) - bottom)).toBeLessThan(2);
     });
@@ -186,5 +186,26 @@ describe("names", () => {
     ["Bulgarian Split Squat", "lunge"], ["Walking Lunge", "lunge"], ["Goblet Squat", "squat"],
     ["Romanian Deadlift", "rdl"], ["DB RDL", "rdl"], ["Push-up", "pushup"], ["Pushup", "pushup"],
     ["Hammer Curl", "curl"], ["Plank", ""],
+    ["lying leg curl machine", ""], ["seated leg curl machine", ""], ["dumbbell hip hinge", "rdl"],
+    ["barbell bulgarian split squat", "lunge"], ["barbell reverse lunges", "lunge"], ["hack squat machine", "squat"],
   ])("guessType(%s) = %s", (n, t) => expect(guessType(n)).toBe(t));
+});
+
+describe("rep boundaries", () => {
+  it("reps run from peak to peak, not threshold to threshold", () => {
+    const sig = [];
+    for (let i = 0; i < 3 * 40; i++) sig.push(130 + 50 * Math.cos(2 * Math.PI * i / 40));
+    const th = thresholds(sig), reps = segment(sig, th.hi, th.lo);
+    expect(reps.map(r => r.slice(0, 2))).toEqual([[0, 40], [40, 80], [80, 119]]);
+  });
+  it("tempo leaves out a pause at the top", () => {
+    // 20 frames of hold at the top, then a 20-frame rep
+    const sig = [...Array.from({length: 20}, (_, i) => 177 - i * 0.1), ...Array.from({length: 21}, (_, i) => 115 + 60 * Math.cos(2 * Math.PI * i / 20))];
+    const [[s, e, ms, me]] = segment(sig, 150, 90);
+    expect(s).toBeLessThan(20);
+    expect(ms).toBeGreaterThanOrEqual(19);
+    expect(e).toBe(40);
+    const recs = sig.map((v, i) => ({t: i / 10, f: {elbow: v}, pose: [[0, 0]]}));
+    expect(repFrom(recs.slice(s, e + 1), ["elbow"], ms - s, me - s).dur).toBeLessThan(2.2);
+  });
 });

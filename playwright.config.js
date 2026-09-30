@@ -21,6 +21,10 @@ export default defineConfig({
       ],
     },
   },
+  projects: [
+    {name: "desktop", use: {viewport: {width: 1280, height: 900}}},
+    {name: "phone", testMatch: /cases|live/, use: {viewport: {width: 390, height: 844}, deviceScaleFactor: 2, hasTouch: true}},
+  ],
   webServer: {
     command: "npx http-server app -p 8080 -c-1 --silent",
     url: "http://localhost:8080/",
