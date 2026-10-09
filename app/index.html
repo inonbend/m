@@ -457,7 +457,8 @@ function fillRefs(){
   const sel=$("tplSel"),cur=sel.value;sel.innerHTML="";
   Object.values(templates).filter(t=>t.exercise===trainEx).sort((a,b)=>(b.anim?2:b.builtin?1:0)-(a.anim?2:a.builtin?1:0))
     .forEach(t=>sel.add(new Option(t.builtin?"Built-in animation":t.anim?"Animation: "+t.name.replace(/ \(animation\)$/,""):t.name,t.name)));
-  if([...sel.options].some(o=>o.value===cur))sel.value=cur;sel.onchange();
+  // keep the session when the same reference is still there (e.g. guides arriving in the background)
+  if(cur&&[...sel.options].some(o=>o.value===cur)){sel.value=cur;renderGuide()}else sel.onchange();
 }
 Object.entries(EX).forEach(([k,e])=>{const b=document.createElement("button");b.textContent=e.name;b.setAttribute("aria-pressed",k===trainEx);
   b.onclick=()=>{trainEx=k;[...$("trainEx").children].forEach(x=>x.setAttribute("aria-pressed",x===b));fillRefs()};$("trainEx").append(b)});

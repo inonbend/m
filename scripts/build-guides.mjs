@@ -56,7 +56,7 @@ try {
       mp4: `clips/${m.id}.mp4`, webm: `clips/${m.id}.webm`,
       bytes: {mp4: fs.statSync(path.join(outDir, "clips", `${m.id}.mp4`)).size, webm: fs.statSync(path.join(outDir, "clips", `${m.id}.webm`)).size}};
   }).filter(Boolean);
-  const manifest = {version: new Date().toISOString().slice(0, 10) + "." + out.length, source: "Vital Animations free pack (vitalanimations.com)", items: out};
+  const manifest = {version: new Date().toISOString().slice(0, 16).replace(/[-:T]/g, "") + "." + out.length, source: "Vital Animations free pack (vitalanimations.com)", items: out};
   fs.writeFileSync(path.join(outDir, "guides.json"), JSON.stringify(manifest));
   fs.writeFileSync(path.join(outDir, "vercel.json"), JSON.stringify({headers: [
     {source: "/(.*)", headers: [{key: "Access-Control-Allow-Origin", value: "*"}, {key: "Cache-Control", value: "public, max-age=3600"}]},
