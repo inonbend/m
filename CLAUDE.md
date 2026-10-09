@@ -279,7 +279,7 @@ player), filmed at an angle, with more than one person. The pipeline:
   headless or blocklisted GPUs), where CPU is ~3× faster. `?cpu` forces CPU.
 
 ### 4.10c Exercise guides ("How to do it")
-Train shows a collapsible guide under the exercise pills: the animation for the
+Train shows a collapsible guide at the bottom of the tab: the animation for the
 selected animation reference, else the exercise's default guide, with target
 muscles, equipment, difficulty and numbered steps. Push-up and bicep curl have
 no animation in the Vital free pack, so they show the built-in skeleton loop and

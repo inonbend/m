@@ -186,14 +186,6 @@ label.file input{position:absolute;opacity:0;width:1px;height:1px}
     <div class="row" id="trainEx" role="group" aria-label="Exercise"></div>
     <div class="row"><select id="tplSel" aria-label="Reference"></select></div>
   </div>
-  <details class="box guide" id="guideBox" open>
-    <summary id="guideTitle">How to do it</summary>
-    <div class="guidebody">
-      <video id="guideVideo" muted playsinline loop autoplay class="hidden"></video>
-      <canvas id="guideGhost" class="ghost hidden" width="400" height="400"></canvas>
-      <div><p class="stat" id="guideMeta" style="margin:0 0 8px"></p><ol id="guideSteps"></ol></div>
-    </div>
-  </details>
   <div class="stage big">
     <canvas id="cv" width="640" height="480"></canvas>
     <div class="pip hidden" id="pipBox"><video id="pip" muted playsinline loop></video><span id="pipLabel">Reference</span></div>
@@ -235,6 +227,14 @@ label.file input{position:absolute;opacity:0;width:1px;height:1px}
     <div class="box"><h2>Rep breakdown</h2><div id="meters"><p class="stat" style="margin:0">Complete a rep to see scores.</p></div></div>
     <div class="box"><h2>What to fix</h2><ul id="tips"><li class="stat">Nothing yet.</li></ul></div>
   </div>
+  <details class="box guide" id="guideBox" open>
+    <summary id="guideTitle">How to do it</summary>
+    <div class="guidebody">
+      <video id="guideVideo" muted playsinline loop autoplay class="hidden"></video>
+      <canvas id="guideGhost" class="ghost hidden" width="400" height="400"></canvas>
+      <div><p class="stat" id="guideMeta" style="margin:0 0 8px"></p><ol id="guideSteps"></ol></div>
+    </div>
+  </details>
 </section>
 
 <!-- ============ LIBRARY ============ -->
