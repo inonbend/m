@@ -120,6 +120,15 @@ button.big{font-size:19px;padding:15px 34px;width:100%}
 @media(max-width:820px){.stage.big{scroll-margin-top:calc(env(safe-area-inset-top,0px) + 8px)}header{position:static;padding:8px 10px;gap:8px;margin-bottom:12px}h1{font-size:24px}
   #trainEx{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;margin:0 -4px;padding:2px 4px}#trainEx::-webkit-scrollbar{display:none}#trainEx button{flex:none}
   .stagebar button,.chip{padding:7px 12px;font-size:14px}.trainlayout>.box.stack{padding:12px}}
+.guide summary{cursor:pointer;font-weight:600;font-size:17px;list-style:none;display:flex;align-items:center;gap:8px}
+.guide summary::-webkit-details-marker{display:none}
+.guide summary::before{content:"";width:8px;height:8px;border-right:2px solid var(--dim);border-bottom:2px solid var(--dim);transform:rotate(-45deg);transition:transform .2s}
+.guide[open] summary::before{transform:rotate(45deg)}
+.guidebody{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:16px;margin-top:12px;align-items:start}
+.guidebody video,.guidebody canvas{width:100%;max-height:320px;object-fit:contain;background:var(--media);border-radius:16px}
+.guidebody video{background:#fff}
+.guidebody ol{margin:0;padding-left:20px;line-height:1.5}
+@media(max-width:820px){.guidebody{grid-template-columns:1fr}.guidebody video,.guidebody canvas{max-height:240px}}
 .hidden{display:none!important}
 label.file{display:inline-block}
 label.file input{position:absolute;opacity:0;width:1px;height:1px}
@@ -218,6 +227,14 @@ label.file input{position:absolute;opacity:0;width:1px;height:1px}
     <div class="box"><h2>Rep breakdown</h2><div id="meters"><p class="stat" style="margin:0">Complete a rep to see scores.</p></div></div>
     <div class="box"><h2>What to fix</h2><ul id="tips"><li class="stat">Nothing yet.</li></ul></div>
   </div>
+  <details class="box guide" id="guideBox" open>
+    <summary id="guideTitle">How to do it</summary>
+    <div class="guidebody">
+      <video id="guideVideo" muted playsinline loop autoplay class="hidden"></video>
+      <canvas id="guideGhost" class="ghost hidden" width="400" height="400"></canvas>
+      <div><p class="stat" id="guideMeta" style="margin:0 0 8px"></p><ol id="guideSteps"></ol></div>
+    </div>
+  </details>
 </section>
 
 <!-- ============ LIBRARY ============ -->
@@ -270,6 +287,7 @@ import {N,FEATS,EX,PTS,IDX,BONES,record,features3,sidePose3} from "./src/pose/fe
 import {roiCandidates,poseFit,pickRoi,padRoi} from "./src/pose/roi.js";
 import {buildTracks,pickTrack} from "./src/brain/track.js";
 import {phaseIndices} from "./src/brain/phase.js";
+import {fitGhost} from "./src/live/ghost.js";
 import {smooth,thresholds,segment,repFrom,motionSpan} from "./src/brain/segment.js";
 import {buildTemplate} from "./src/brain/template.js";
 import {builtin} from "./src/brain/builtins.js";
@@ -439,17 +457,16 @@ function fillRefs(){
   const sel=$("tplSel"),cur=sel.value;sel.innerHTML="";
   Object.values(templates).filter(t=>t.exercise===trainEx).sort((a,b)=>(b.anim?2:b.builtin?1:0)-(a.anim?2:a.builtin?1:0))
     .forEach(t=>sel.add(new Option(t.builtin?"Built-in animation":t.anim?"Animation: "+t.name.replace(/ \(animation\)$/,""):t.name,t.name)));
-  if([...sel.options].some(o=>o.value===cur))sel.value=cur;sel.onchange();
+  // keep the session when the same reference is still there (e.g. guides arriving in the background)
+  if(cur&&[...sel.options].some(o=>o.value===cur)){sel.value=cur;renderGuide()}else sel.onchange();
 }
 Object.entries(EX).forEach(([k,e])=>{const b=document.createElement("button");b.textContent=e.name;b.setAttribute("aria-pressed",k===trainEx);
   b.onclick=()=>{trainEx=k;[...$("trainEx").children].forEach(x=>x.setAttribute("aria-pressed",x===b));fillRefs()};$("trainEx").append(b)});
 function liveCue(text){const now=performance.now();if(now-session.lastCue<2500)return;session.lastCue=now;cue(text,"var(--warn)");say(text)}
 let showVec=true,showGhost=true,showPip=true;
 function drawGuide(j,p,W,H,mirror=true){
-  // anchor at the ankle; upper-body exercises often have the feet out of frame, then anchor at the hip
-  const A=j.ankle.v>.5?6:4,an=PTS[A],Z=scaleOf(W,H);
-  const dir=(j.toe.x-j.heel.x)>=0?1:-1,t=Math.hypot(j.sh.x-j.hip.x,j.sh.y-j.hip.y)*H,ax=j[an].x*H,ay=j[an].y*H,
-    X=x=>mirror?W-x:x,P=n=>[X(ax+(p[n][0]-p[A][0])*dir*t),ay+(p[n][1]-p[A][1])*t];
+  // the reference pose rebuilt on the user's own limb lengths (src/live/ghost.js)
+  const {anchor:A,pts:G}=fitGhost(p,j),Z=scaleOf(W,H),P=k=>[mirror?W-G[k][0]*H:G[k][0]*H,G[k][1]*H];
   const pts={};PTS.forEach((n,k)=>pts[n]=P(k));if(!showGhost)return pts;
   ctx.strokeStyle="rgba(48,209,88,.55)";ctx.lineWidth=Z/55;ctx.lineCap="round";
   BONES.forEach(([a,b])=>{if(A===4&&(a>4||b>4))return;ctx.beginPath();ctx.moveTo(...P(a));ctx.lineTo(...P(b));ctx.stroke()});
@@ -505,7 +522,7 @@ function resetSession(){
   Object.assign(session,{asc:false,minV:Infinity,bad:{},lastCue:0,mid:null});
   if(T&&!camStream){$("cue").classList.add("hidden");$("trainEmpty").classList.remove("hidden");$("startText").textContent=(T.tip||"Watch the reference, then start the camera.")+" Stand side-on with your whole body in frame."}
 }
-$("tplSel").onchange=()=>{stopReplay();resetSession();$("camBtn").disabled=$("userFile").disabled=!tpl();loadPip(tpl())};
+$("tplSel").onchange=()=>{stopReplay();resetSession();$("camBtn").disabled=$("userFile").disabled=!tpl();loadPip(tpl());renderGuide()};
 /* ---- reference animation picture-in-picture, scrubbed to your phase ---- */
 let pipUrl=null,pipT=null,lastSeek=0;
 async function loadPip(T){
@@ -811,7 +828,56 @@ $("recDel").onclick=async()=>{if(!selRec||!confirm("Delete this recording?"))ret
 $("recAnalyze").onclick=()=>{const r=recordings.find(x=>x.id===selRec);if(!r)return;tab("train");
   [...$("trainEx").children][Object.keys(EX).indexOf(r.exKey)]?.click();if(templates[r.reference]&&templates[r.reference].exercise===r.exKey){$("tplSel").value=r.reference;$("tplSel").onchange()}
   $("trainEmpty").classList.add("hidden");analyzeUserVideo(r.blob)};
+/* ---- exercise guides: "How to do it" (animations hosted outside this repo, see scripts/build-guides.mjs) ---- */
+const GUIDES_URL=new URLSearchParams(location.search).get("guides")||"https://form-coach-guides.vercel.app/guides.json";
+const BUILTIN_STEPS={
+  squat:["Feet about shoulder-width apart, toes slightly out.","Sit back and down, chest up, knees tracking over your toes.","Go down until your thighs are about level with the floor.","Drive through your heels to stand tall."],
+  lunge:["Stand tall, then step one leg forward or back.","Lower straight down until both knees are bent about 90°.","Keep your torso upright and your front knee over your ankle.","Push back up to the start and switch legs."],
+  rdl:["Stand tall holding the weight, knees soft.","Push your hips back and let the weight slide down your legs.","Keep your back flat; stop when you feel the hamstrings stretch.","Drive your hips forward to stand back up."],
+  pushup:["Hands under your shoulders, body straight from head to heels.","Lower your chest until your elbows are bent about 90°.","Keep your hips in line: no sagging, no piking.","Press back up to straight arms."],
+  curl:["Stand tall, weights at your sides, palms forward.","Keep your elbows pinned to your sides.","Curl up until the weights reach your shoulders.","Lower slowly all the way down."]
+};
+const cap=t=>String(t||"").replace(/^./,c=>c.toUpperCase());
+let guideUrl=null,guideToken=0;
+try{if(localStorage.getItem("fc_guide_open")==="0")$("guideBox").open=false}catch{}
+$("guideBox").ontoggle=()=>{try{localStorage.setItem("fc_guide_open",$("guideBox").open?"1":"0")}catch{}};
+async function renderGuide(){
+  const token=++guideToken,T=tpl(),all=await dbAll("animations").catch(()=>[]);if(token!==guideToken)return;
+  const mine=all.filter(a=>a.type===trainEx&&a.blob&&a.instructions);
+  const a=(T?.anim&&mine.find(x=>x.id===T.anim.id))||mine.find(x=>x.guide==="default")||mine.find(x=>x.guide)||mine[0];
+  const v=$("guideVideo"),g=$("guideGhost");if(guideUrl){URL.revokeObjectURL(guideUrl);guideUrl=null}
+  let steps;
+  if(a){
+    guideUrl=URL.createObjectURL(a.blob);v.src=guideUrl;v.play().catch(()=>{});v.classList.remove("hidden");g.classList.add("hidden");delete ghosts.guideGhost;
+    $("guideTitle").textContent="How to do it: "+cap(a.name);
+    $("guideMeta").textContent=[a.target&&"Works: "+[a.target].concat(a.secondaryMuscles||[]).join(", "),a.equipment&&"Equipment: "+a.equipment,a.difficulty&&cap(a.difficulty)].filter(Boolean).join(" · ");
+    steps=Array.isArray(a.instructions)?a.instructions:String(a.instructions).split(/\n+/);
+  }else{
+    const b=templates[EX[trainEx].name+" (built-in)"];v.removeAttribute("src");v.classList.add("hidden");g.classList.remove("hidden");
+    ghosts.guideGhost={ref:b.pose,dur:b.dur,ex:trainEx};
+    $("guideTitle").textContent="How to do it: "+EX[trainEx].name;$("guideMeta").textContent=b.tip;steps=BUILTIN_STEPS[trainEx];
+  }
+  $("guideSteps").innerHTML=steps.map(t=>`<li>${esc(t)}</li>`).join("");
+}
+// download the guide animations once (like the pose model), then they work offline from IndexedDB
+async function installGuides(){
+  if(!navigator.onLine||navigator.connection?.saveData)return;
+  let m;try{m=await(await fetch(GUIDES_URL,{cache:"no-cache"})).json()}catch{return}
+  try{if(localStorage.getItem("fc_guides")===m.version)return}catch{}
+  const fmt=document.createElement("video").canPlayType('video/mp4; codecs="avc1.4D401E"')?"mp4":"webm";
+  const have=Object.fromEntries((await dbAll("animations")).map(a=>[a.id,a]));let failed=0;
+  for(const it of m.items){
+    const {template,mp4,webm,bytes,default:isDefault,...md}=it,old=have[it.id]||{};let blob=old.guide&&old.blob;
+    if(!blob){try{const r=await fetch(new URL(it[fmt],GUIDES_URL));if(!r.ok)throw 0;blob=await r.blob()}catch{failed++;continue}}
+    await dbPut("animations",{...old,...md,id:it.id,type:old.type||it.type,blob,mime:blob.type||`video/${fmt}`,size:blob.size,file:old.file||`${it.id}.${fmt}`,
+      added:old.added||Date.now(),guide:isDefault?"default":true,templateName:template.name,analysis:old.analysis||it.analysis});
+    templates[template.name]=template;
+  }
+  save();renderLib();renderGuide();
+  if(!failed)try{localStorage.setItem("fc_guides",m.version)}catch{}
+}
 renderLib();const first=Object.keys(templates)[0];if(first)showTemplate(first);tab("train");
+installGuides();
 </script>
 <script>
 /* ============ installable app: service worker, install prompt, offline status ============ */

@@ -47,6 +47,13 @@ python3 -m http.server 8080
 A phone on your Wi-Fi can't use the camera over plain `http://192.168…`;
 use one of the HTTPS hosts above.
 
+## Exercise guides
+
+Train shows **How to do it** for each exercise: an animation with step-by-step
+instructions. The animations download once (about 1.5 MB) the first time the
+app opens online and then work offline. They also appear as references
+("Animation: …") you can train against.
+
 ## Analyzing a video
 
 Train → **Analyze a video instead** accepts clips from the camera roll,

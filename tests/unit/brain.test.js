@@ -209,3 +209,19 @@ describe("rep boundaries", () => {
     expect(repFrom(recs.slice(s, e + 1), ["elbow"], ms - s, me - s).dur).toBeLessThan(2.2);
   });
 });
+
+describe("lunge side", () => {
+  it("scores the front leg even when the rear leg is more visible", async () => {
+    const {record, IDX} = await import("../../app/src/pose/features.js");
+    const lm = Array.from({length: 33}, () => ({x: .5, y: .5, visibility: .9}));
+    const put = (side, pts, v) => pts.forEach((p, k) => (lm[IDX[side][k]] = {x: p[0], y: p[1], visibility: v}));
+    // [nose, sh, el, wr, hip, knee, ankle, heel, toe]
+    const front = [[.5, .1], [.5, .2], [.5, .3], [.5, .4], [.5, .5], [.65, .5], [.65, .7], [.63, .72], [.7, .72]]; // thigh level
+    const rear = [[.5, .1], [.5, .2], [.5, .3], [.5, .4], [.5, .5], [.45, .7], [.3, .72], [.28, .72], [.33, .72]];  // knee down, hip open
+    put("L", rear, .99); put("R", front, .8);
+    const r = record(lm, 1, "lunge", 0);
+    expect(r.j.ids).toEqual(IDX.R);
+    expect(r.f.hip).toBeLessThan(120);
+    expect(record(lm, 1, "squat", 0).j.ids).toEqual(IDX.L); // other exercises: most visible side
+  });
+});

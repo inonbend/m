@@ -26,9 +26,10 @@ export const PTS=["nose","sh","el","wr","hip","knee","ankle"];
 export const IDX={L:[0,11,13,15,23,25,27,29,31],R:[0,12,14,16,24,26,28,30,32]};
 export const BONES=[[0,1],[1,2],[2,3],[1,4],[4,5],[5,6]];
 
-export function toJoints(lm,aspect){
+// side: "L"/"R" to force a body side, else the more visible one
+export function toJoints(lm,aspect,side){
   const vis=k=>IDX[k].slice(1,7).reduce((s,i)=>s+(lm[i].visibility??0),0);
-  const ids=IDX[vis("L")>=vis("R")?"L":"R"],j={};
+  const ids=IDX[side||(vis("L")>=vis("R")?"L":"R")],j={};
   PTS.concat(["heel","toe"]).forEach((n,k)=>{const p=lm[ids[k]];j[n]={x:p.x*aspect,y:p.y,v:p.visibility??1}});
   j.ids=ids;return j;
 }
@@ -37,7 +38,10 @@ export function normPose(j){
   return PTS.map(n=>[+((j[n].x-o.x)/s*dir).toFixed(3),+((j[n].y-o.y)/s).toFixed(3)]);
 }
 export function record(lm,aspect,exKey,t){
-  const E=EX[exKey],j=toJoints(lm,aspect);
+  const E=EX[exKey];let j=toJoints(lm,aspect);
+  // lunge: score the front leg (the flexed hip); the rear leg's hip opens up and its knee drops to the floor
+  if(exKey==="lunge"){const ok=x=>E.need.every(k=>x[k].v>.5),[a,b]=["L","R"].map(sd=>toJoints(lm,aspect,sd)).filter(ok);
+    if(a)j=b&&FEATS.hip.f(b)<FEATS.hip.f(a)?b:a}
   if(!E.need.every(k=>j[k].v>.5))return null;
   const f={};E.feats.forEach(k=>f[k]=FEATS[k].f(j));
   return{t,f,pose:normPose(j),j};

@@ -49,6 +49,7 @@ app/
   src/brain/track.js          # multi-person tracking in uploaded videos
   src/brain/phase.js          # reference index per frame (for the replay overlays)
   src/pose/roi.js             # automatic crop: find the exerciser in the frame
+  src/live/ghost.js           # fitGhost: reference angles on the user's own bone lengths
   sw.js                       # service worker (precache shell, cache-first model)
   manifest.webmanifest
   _headers                    # Netlify / Cloudflare Pages caching + wasm MIME
@@ -141,8 +142,14 @@ All five start with the primary angle high, go low, return high.
 ### 4.4 Pose normalization (for ghost/animation)
 Origin at the hip, scale by torso length (shoulder–hip), flip x so the body
 faces +x (facing = sign of toe.x − heel.x). Points stored: nose, shoulder,
-elbow, wrist, hip, knee, ankle. Ghosts are drawn anchored at the ankle
-(standing exercises: bottom-center; push-up: bottom-left).
+elbow, wrist, hip, knee, ankle. Small ghost canvases draw the pose anchored at
+the ankle (standing exercises: bottom-center; push-up: bottom-left).
+On the video, the ghost is fitted to the user (`fitGhost`): it keeps the
+reference's bone directions (its joint angles) but uses the user's own bone
+lengths, built outward from the user's ankle (ankle → knee → hip → shoulder →
+head, shoulder → elbow → wrist), or from the hip when the feet are out of
+frame. A torso-scaled copy drifted off the body whenever limb proportions
+differed from the reference.
 
 ### 4.5 Rep segmentation
 - Smooth the primary signal (moving average, window 5).
@@ -271,6 +278,29 @@ player), filmed at an angle, with more than one person. The pipeline:
 - Delegate: GPU, except when WebGL is software (SwiftShader/llvmpipe, e.g.
   headless or blocklisted GPUs), where CPU is ~3× faster. `?cpu` forces CPU.
 
+### 4.10c Exercise guides ("How to do it")
+Train shows a collapsible guide at the bottom of the tab: the animation for the
+selected animation reference, else the exercise's default guide, with target
+muscles, equipment, difficulty and numbered steps. Push-up and bicep curl have
+no animation in the Vital free pack, so they show the built-in skeleton loop and
+built-in steps.
+- Media is NOT in this repo (Vital license: no redistributing raw files). It is
+  hosted at `https://form-coach-guides.vercel.app` (Vercel project
+  `form-coach-guides`, account inonbend): `guides.json` + `clips/<id>.mp4|webm`,
+  CORS `*`. Built with `node scripts/build-guides.mjs <VitalAnimations dir>
+  <out dir>` (transcodes the 11 trackable Free50 clips, learns each reference
+  with the app's own brain headless, writes the manifest), then
+  `cd <out dir> && vercel deploy --prod`. Free pack ZIP:
+  `https://pub-a63d6296f71940e5b51f4f8065d7b660.r2.dev/VitalAnimations/VitalAnimations.zip`.
+- The app (`installGuides`) downloads them once when online (MP4 if the browser
+  plays H.264, else WebM) into the IndexedDB `animations` store, same records
+  as a Library import plus `guide: true|"default"`, and adds the precomputed
+  templates, so they are references ("Animation: …") and PiP immediately and
+  work offline. `localStorage.fc_guides` holds the manifest version; a new
+  version re-syncs. `?guides=<url>` overrides the manifest URL (tests).
+- Defaults: squat → dumbbell goblet squat, lunge → barbell reverse lunges,
+  rdl → barbell romanian deadlift.
+
 ### 4.11 Recording
 `MediaRecorder` on `canvas.captureStream(30)`, so overlays are recorded.
 The MIME type is the first supported of `video/webm;codecs=vp9`, `video/webm`,
@@ -392,6 +422,13 @@ license forbids redistributing its files). Current results:
 | 3 | bodyweight squat, YouTube screen recording: small, angled, coach next to him | cropped to the player, tracks the squatter, 3D angles, 1 rep, ~90 |
 | – | Vital free pack (50 animations): Analyze all | 11 of 11 supported become references (front view, 3D) in ~2.5 min headless |
 | – | live camera fed the good curl | one rep per loop, 98–99 |
+
+`tests/e2e/guides.spec.js` serves `tests/fixtures/local/guides-site` (a symlink
+to the build-guides output) on :8081.
+
+If `npx playwright install` hangs on a stale `~/Library/Caches/ms-playwright/__dirlock`
+(another project's install), use a separate cache:
+`PLAYWRIGHT_BROWSERS_PATH=~/Library/Caches/ms-playwright-formcoach`.
 
 `scripts/one.mjs`, `scripts/explore.mjs`, `scripts/diag*.mjs`, `scripts/live.mjs`
 and `scripts/tune.mjs` are the ad-hoc tools used to get there (see headers).
