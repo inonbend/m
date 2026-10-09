@@ -23,11 +23,11 @@ export default defineConfig({
   },
   projects: [
     {name: "desktop", use: {viewport: {width: 1280, height: 900}}},
-    {name: "phone", testMatch: /cases|live/, use: {viewport: {width: 390, height: 844}, deviceScaleFactor: 2, hasTouch: true}},
+    {name: "phone", testMatch: /cases|live|guides/, use: {viewport: {width: 390, height: 844}, deviceScaleFactor: 2, hasTouch: true}},
   ],
-  webServer: {
-    command: "npx http-server app -p 8080 -c-1 --silent",
-    url: "http://localhost:8080/",
-    reuseExistingServer: true,
-  },
+  webServer: [
+    {command: "npx http-server app -p 8080 -c-1 --silent", url: "http://localhost:8080/", reuseExistingServer: true},
+    // the guides site built by scripts/build-guides.mjs (local only: licensed media); empty if not built
+    {command: `npx http-server ${process.env.GUIDES_DIR || "tests/fixtures/local/guides-site"} -p 8081 -c-1 --cors --silent`, port: 8081, reuseExistingServer: true},
+  ],
 });
