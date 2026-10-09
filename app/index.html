@@ -328,10 +328,10 @@ function drawSkel(g,lm,ids,W,H,mirror,color="#F2F4F3"){
 }
 const seekTo=(v,t)=>new Promise(r=>{v.onseeked=r;v.currentTime=t});
 /* where in the frame is the exerciser? try crops on a few sample frames (see src/pose/roi.js) */
-async function findRoi(v,E,W,H,K=6){
+async function findRoi(v,E,W,H,cancelled,K=6){
   const sides=["L","R"].map(s=>E.need.map(n=>IDX[s][PTS.indexOf(n)])),fit=lm=>Math.max(...sides.map(ix=>poseFit(lm,ix)));
   const cands=roiCandidates(W,H),scores=cands.map(()=>[]),c=document.createElement("canvas"),g=c.getContext("2d");
-  const score=async(ci)=>{for(let k=0;k<K;k++){await seekTo(v,v.duration*(k+.5)/K);const [x,y,w,h]=cands[ci],sc=Math.min(1,640/Math.max(W*w,H*h));
+  const score=async(ci)=>{for(let k=0;k<K;k++){if(cancelled())throw new Cancelled();await seekTo(v,v.duration*(k+.5)/K);const [x,y,w,h]=cands[ci],sc=Math.min(1,640/Math.max(W*w,H*h));
     c.width=Math.round(W*w*sc);c.height=Math.round(H*h*sc);g.drawImage(v,W*x,H*y,W*w,H*h,0,0,c.width,c.height);
     scores[ci].push(Math.max(0,...(landmarker.detect(c).landmarks||[]).map(fit)))}};
   await landmarker.setOptions({runningMode:"IMAGE",numPoses:3});
@@ -340,17 +340,25 @@ async function findRoi(v,E,W,H,K=6){
   finally{await landmarker.setOptions({runningMode:"VIDEO"})}
   const r=pickRoi(cands,scores);return r===cands[0]?r:padRoi(r);
 }
-async function processVideo(file,exKey,canvas,progEl,fps=15){
+class Cancelled extends Error{constructor(){super("cancelled")}}
+// one video analysis at a time: they share the landmarker and switch its options
+let videoLock=Promise.resolve();
+async function processVideo(file,exKey,canvas,progEl,fps=15,cancelled=()=>false){
+  const prev=videoLock;let release;videoLock=new Promise(r=>release=r);
+  try{await prev;if(cancelled())throw new Cancelled();return await analyzeFrames(file,exKey,canvas,progEl,fps,cancelled)}finally{release()}
+}
+async function analyzeFrames(file,exKey,canvas,progEl,fps,cancelled){
   await getModel();
   const v=document.createElement("video");v.muted=true;v.playsInline=true;v.preload="auto";v.src=URL.createObjectURL(file);
   await new Promise((r,e)=>{v.onloadeddata=r;v.onerror=()=>e(new Error("This video format can't be read"))});
   const E=EX[exKey],W=v.videoWidth,H=v.videoHeight;progEl.classList.remove("hidden");progEl.value=0;
-  const [rx,ry,rw,rh]=await findRoi(v,E,W,H),sc=Math.min(1,1280/Math.max(W*rw,H*rh));
+  const [rx,ry,rw,rh]=await findRoi(v,E,W,H,cancelled),sc=Math.min(1,1280/Math.max(W*rw,H*rh));
   const g=canvas.getContext("2d");canvas.width=Math.round(W*rw*sc);canvas.height=Math.round(H*rh*sc);
   const aspect=canvas.width/canvas.height,frames=[];let poseFrames=0;
   await landmarker.setOptions({numPoses:3}); // other people may be in the video: track them all, keep the exerciser
   try{
     for(let t=0;t<v.duration;t+=1/fps){
+      if(cancelled()){progEl.classList.add("hidden");URL.revokeObjectURL(v.src);throw new Cancelled()}
       await seekTo(v,t);
       g.drawImage(v,W*rx,H*ry,W*rw,H*rh,0,0,canvas.width,canvas.height);
       const res=landmarker.detectForVideo(canvas,nextTs()),all=res.landmarks||[],cands=[];
@@ -455,7 +463,7 @@ $("importFile").onchange=async e=>{
 let voiceOn=true,session,camStream=null,trainEx="squat";
 function fillRefs(){
   const sel=$("tplSel"),cur=sel.value;sel.innerHTML="";
-  Object.values(templates).filter(t=>t.exercise===trainEx).sort((a,b)=>(b.anim?2:b.builtin?1:0)-(a.anim?2:a.builtin?1:0))
+  Object.values(templates).filter(t=>t.exercise===trainEx).sort((a,b)=>(b.anim?2+!!b.guideDefault:b.builtin?1:0)-(a.anim?2+!!a.guideDefault:a.builtin?1:0))
     .forEach(t=>sel.add(new Option(t.builtin?"Built-in animation":t.anim?"Animation: "+t.name.replace(/ \(animation\)$/,""):t.name,t.name)));
   // keep the session when the same reference is still there (e.g. guides arriving in the background)
   if(cur&&[...sel.options].some(o=>o.value===cur)){sel.value=cur;renderGuide()}else sel.onchange();
@@ -522,7 +530,7 @@ function resetSession(){
   Object.assign(session,{asc:false,minV:Infinity,bad:{},lastCue:0,mid:null});
   if(T&&!camStream){$("cue").classList.add("hidden");$("trainEmpty").classList.remove("hidden");$("startText").textContent=(T.tip||"Watch the reference, then start the camera.")+" Stand side-on with your whole body in frame."}
 }
-$("tplSel").onchange=()=>{stopReplay();resetSession();$("camBtn").disabled=$("userFile").disabled=!tpl();loadPip(tpl());renderGuide()};
+$("tplSel").onchange=()=>{analyzeJob++;$("prog2").classList.add("hidden");stopReplay();resetSession();$("camBtn").disabled=$("userFile").disabled=!tpl();loadPip(tpl());renderGuide()};
 /* ---- reference animation picture-in-picture, scrubbed to your phase ---- */
 let pipUrl=null,pipT=null,lastSeek=0;
 async function loadPip(T){
@@ -572,7 +580,7 @@ $("camBtn").onclick=async()=>{
   if(camStream){if(recorder)recorder.stop();camStream.getTracks().forEach(t=>t.stop());camStream=null;$("recBtn").disabled=true;
     $("stagebar").classList.add("hidden");$("trainEmpty").classList.remove("hidden");$("startText").textContent=(tpl()?.tip||"")+" Stand side-on with your whole body in frame.";return}
   try{
-    stopReplay();$("trainEmpty").classList.remove("hidden");await getModel($("startText"));
+    analyzeJob++;stopReplay();$("trainEmpty").classList.remove("hidden");await getModel($("startText"));
     $("startText").textContent="Allow camera access to begin.";
     camStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:"user",width:{ideal:960},height:{ideal:720}},audio:false});
     video.srcObject=camStream;await video.play();$("trainEmpty").classList.add("hidden");$("stagebar").classList.remove("hidden");document.querySelector(".stage.big").scrollIntoView({behavior:"smooth",block:"start"});$("recBtn").disabled=false;
@@ -624,12 +632,14 @@ function live(){
 }
 
 /* ---- uploaded user video ---- */
+// a newer analysis, or changing the exercise or reference, cancels the running one
+let analyzeJob=0;
 async function analyzeUserVideo(file){
-  if(!file)return;const T=tpl(),E=EX[T.exercise];
+  if(!file)return;const T=tpl(),E=EX[T.exercise],job=++analyzeJob,stale=()=>job!==analyzeJob;
   if(camStream)$("camBtn").click();
   stopReplay();resetSession();$("trainEmpty").classList.add("hidden");cue("Analyzing your video…");
   try{
-    const recs=await processVideo(file,T.exercise,cv,$("prog2"));
+    const recs=await processVideo(file,T.exercise,cv,$("prog2"),15,stale);if(stale())return;
     const prim=smooth(recs.map(r=>r.f[E.primary])),reps=segment(prim,T.hi,T.lo);
     if(!reps.length)throw new Error("No complete reps found — film side-on with your whole body in frame");
     reps.forEach(([s,en,ms,me])=>addResult(repFrom(recs.slice(s,en+1),E.feats,ms-s,me-s),false));
@@ -638,7 +648,7 @@ async function analyzeUserVideo(file){
     const worst=session.results.reduce((w,r,i,a)=>r.score<a[w].score?i:w,0);showResult(worst,false);
     const notes=[recs.depth&&`${recs.view==="front"?"Front":"Angled"} view: measured in 3D.`,recs.people&&"Tracking the person doing the reps."].filter(Boolean).join(" ");
     cue(`${reps.length} rep${reps.length>1?"s":""} found, average ${$("avg").textContent}. Rep ${worst+1} (weakest), ${E.mid.toLowerCase()}. Tap to play. ${notes}`);
-  }catch(err){cue((err.message||err)+".","var(--warn)");$("trainEmpty").classList.remove("hidden")}
+  }catch(err){if(stale()||err instanceof Cancelled)return;cue((err.message||err)+".","var(--warn)");$("trainEmpty").classList.remove("hidden")}
 }
 $("userFile").onchange=e=>{analyzeUserVideo(e.target.files[0]);e.target.value=""};
 /* ---- replay the analyzed video with the same overlays as the live camera ---- */
@@ -871,7 +881,7 @@ async function installGuides(){
     if(!blob){try{const r=await fetch(new URL(it[fmt],GUIDES_URL));if(!r.ok)throw 0;blob=await r.blob()}catch{failed++;continue}}
     await dbPut("animations",{...old,...md,id:it.id,type:old.type||it.type,blob,mime:blob.type||`video/${fmt}`,size:blob.size,file:old.file||`${it.id}.${fmt}`,
       added:old.added||Date.now(),guide:isDefault?"default":true,templateName:template.name,analysis:old.analysis||it.analysis});
-    templates[template.name]=template;
+    templates[template.name]={...template,guideDefault:!!isDefault};
   }
   save();renderLib();renderGuide();
   if(!failed)try{localStorage.setItem("fc_guides",m.version)}catch{}

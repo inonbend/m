@@ -38,3 +38,23 @@ test("guides: downloaded once, shown per exercise, become references, work offli
   await expect(title).toHaveText("How to do it: Barbell romanian deadlift");
   expect(errors).toEqual([]);
 });
+
+test("changing exercise mid-analysis cancels it; only the latest analysis shows", async ({page}) => {
+  test.skip(!fs.existsSync(`${SITE}/clips/0059.webm`), "build the guides site first (scripts/build-guides.mjs)");
+  test.setTimeout(180_000);
+  const errors = []; page.on("pageerror", e => errors.push(e.message));
+  await page.goto("./?guides=http://localhost:8081/guides.json");
+  await expect(page.locator("#guideTitle")).toHaveText(/goblet/i, {timeout: 60_000});
+  await page.locator("#userFile").setInputFiles(`${SITE}/clips/0064.webm`); // squat analysis starts…
+  await page.waitForTimeout(300);
+  await page.locator("#trainEx button", {hasText: "Lunge"}).click();       // …and is cancelled
+  await expect(page.locator("#guideTitle")).toHaveText("How to do it: Barbell reverse lunges"); // default guide first
+  await page.locator("#userFile").setInputFiles(`${SITE}/clips/0059.webm`);
+  await expect(page.locator("#cue")).toHaveText(/reps? found/, {timeout: 150_000});
+  await page.waitForTimeout(3000); // a stale result would land here
+  await expect(page.locator("#cue")).toHaveText(/reps? found/);
+  await expect(page.locator("#trainEmpty")).toBeHidden();
+  await expect(page.locator("#replayBar")).toBeVisible();
+  expect(+await page.locator("#last").textContent()).toBeGreaterThanOrEqual(85); // reverse lunge vs its own reference
+  expect(errors).toEqual([]);
+});

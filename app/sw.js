@@ -1,5 +1,5 @@
 /* Form Coach service worker: app shell precache + offline pose model */
-const VERSION = "form-coach-v1.2.0";
+const VERSION = "form-coach-v1.2.1";
 const SHELL = `${VERSION}-shell`;
 const RUNTIME = `${VERSION}-runtime`;
 const MODEL = "form-coach-model"; // kept across app updates: the model rarely changes and is large
